@@ -61,13 +61,13 @@ global.speechSynthesis = { cancel() {}, speak() {} };
   const ok = (c, m) => { if (c) pass++; else { fail++; fails.push(m); } };
 
   /* ===== 辞書の整合性 ===== */
-  ok(DICT.length >= 3000, "dict size " + DICT.length);
+  ok(DICT.length >= 55000, "dict size " + DICT.length);
   const KANA = /^[ぁ-ゖー]+$/;
   let badKana = 0, badMora = 0, dup = 0; const seenR = new Set();
   for (const [r, w, m] of DICT) {
     if (!KANA.test(r)) badKana++;
     const n = moraUnits(r).length;
-    if (n < 2 || n > 6) badMora++;
+    if (n < 2 || n > 7) badMora++;
     if (seenR.has(r)) dup++; seenR.add(r);
     if (typeof w !== "string" || typeof m !== "string") { fail++; fails.push("entry shape " + r); }
   }
@@ -75,8 +75,19 @@ global.speechSynthesis = { cancel() {}, speak() {} };
   ok(badMora === 0, "mora out of range " + badMora);
   ok(dup === 0, "duplicate readings " + dup);
   ok(WORDSET.size === DICT.length, "wordset sync");
-  for (const t of ["りんご", "がっこう", "きゅうり", "いぬ", "すいか", "でんしゃ"])
+  for (const t of ["りんご", "がっこう", "きゅうり", "いぬ", "すいか", "でんしゃ",
+                   "りおる", "あいあんと", "とうきょう", "ぴかちゅう"])
     ok(WORDSET.has(t), "dict contains " + t);
+  // 7モーラ語も検出できること（辞書から実在の7モーラ語を1つ拾って盤面に置く）
+  const seven = DICT.find(e => moraUnits(e[0]).length === 7);
+  ok(!!seven, "dict has 7-mora words");
+  if (seven) {
+    const u = moraUnits(seven[0]);
+    const g7 = newGrid();
+    u.forEach((mo, i) => { g7[10][i] = mo; });
+    const m7 = findWords(g7);
+    ok(m7.some(m => m.reading === seven[0] && m.len === 7), "7-mora word detected: " + seven[0]);
+  }
 
   /* ===== モーラ分割 ===== */
   ok(JSON.stringify(moraUnits("きゅうり")) === '["きゅ","う","り"]', "moraUnits digraph");

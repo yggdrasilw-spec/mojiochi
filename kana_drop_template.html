@@ -220,9 +220,9 @@ function moraUnits(s) {
 }
 const WORD_INFO = new Map(), WORDSET = new Set();
 const PREFIX_NEXT = new Map(), SUFFIX_PREV = new Map(), MORA_FREQ = new Map();
-for (const [r, w, m, c] of DICT) {
+for (const [r, w, m] of DICT) {
   const u = moraUnits(r);
-  WORD_INFO.set(r, { w, m, c, units: u }); WORDSET.add(r);
+  WORD_INFO.set(r, { w, m, units: u }); WORDSET.add(r);
   for (const mo of u) MORA_FREQ.set(mo, (MORA_FREQ.get(mo) || 0) + 1);
   for (let i = 1; i < u.length; i++) {
     const pre = u.slice(0, i).join(""), suf = u.slice(i).join("");
@@ -415,7 +415,7 @@ function findWords(grid) {
       const u = seg.units, n = u.length;
       for (let i = 0; i < n; i++) {
         let s = "";
-        for (let L = 1; L <= 6 && i + L <= n; L++) {
+        for (let L = 1; L <= 7 && i + L <= n; L++) {
           s += u[i + L - 1];
           if (L >= 2 && WORDSET.has(s)) all.push({ row: r, start: seg.start + i, len: L, reading: s });
         }
@@ -451,7 +451,7 @@ function computeWanted(grid) {
       const u = seg.units;
       for (let i = 0; i < u.length; i++) {
         let s = "";
-        for (let L = 1; L <= 5 && i + L <= u.length; L++) {
+        for (let L = 1; L <= 6 && i + L <= u.length; L++) {
           s += u[i + L - 1];
           if (L >= 2) {
             if (PREFIX_NEXT.has(s)) for (const mo of PREFIX_NEXT.get(s)) wanted.add(mo);
@@ -620,7 +620,7 @@ function markOneAway() {
         const u = seg.units;
         for (let i = 0; i < u.length; i++) {
           let s = "";
-          for (let L = 1; L <= 5 && i + L <= u.length; L++) {
+          for (let L = 1; L <= 6 && i + L <= u.length; L++) {
             s += u[i + L - 1];
             if (L >= 2 && (PREFIX_NEXT.has(s) || SUFFIX_PREV.has(s))) {
               for (let k = 0; k < L; k++) wantedSegs.add(r + ":" + (seg.start + i + k));
@@ -661,25 +661,31 @@ function loop(t) {
   const dt = Math.min(0.05, (t - lastT) / 1000 || 0); lastT = t;
   if (G && G.falling && !G.resolving && !G.over) {
     const f = G.falling;
-    f.x += (f.col - f.x) * Math.min(1, dt * 18);
-    f.y += speedNow() * (G.soft ? PARAMS.softDropX : 1) * dt;
-    const lr = landRow(G.grid, f.col);
-    if (f.y >= lr) {
-      f.y = lr; f.lock += dt;
-      trySlide();
-      if (G.falling && f.lock >= PARAMS.lockDelay) placeBlock();
-    } else f.lock = 0;
-    if (G && G.falling) positionFalling();
+    trySlide();
+    if (G.falling) {
+      f.x += (f.col - f.x) * Math.min(1, dt * 18);
+      f.y += speedNow() * (G.soft ? PARAMS.softDropX : 1) * dt;
+      const lr = landRow(G.grid, f.col);
+      if (f.y >= lr) {
+        f.y = lr; f.lock += dt;
+        if (G.falling && f.lock >= PARAMS.lockDelay) placeBlock();
+      } else f.lock = 0;
+      if (G && G.falling) positionFalling();
+    }
   }
   requestAnimationFrame(loop);
 }
 function trySlide() {
-  const f = G.falling;
-  if (!f || G.targetCol === f.col) return;
-  const step = Math.sign(G.targetCol - f.col);
-  const nc = f.col + step, r = Math.round(f.y);
-  if (nc < 0 || nc >= COLS) return;
-  if (r >= 0 && r < ROWS && !G.grid[r][nc]) { f.col = nc; if (landRow(G.grid, nc) > f.y) f.lock = 0; }
+  const f = G && G.falling;
+  if (!f) return;
+  const r = Math.max(0, Math.round(f.y));
+  while (f.col !== G.targetCol) {
+    const nc = f.col + Math.sign(G.targetCol - f.col);
+    if (nc < 0 || nc >= COLS) break;
+    if (r < ROWS && G.grid[r][nc]) break;
+    f.col = nc;
+    if (landRow(G.grid, nc) > f.y) f.lock = 0;
+  }
 }
 function hardDrop() {
   if (!G || !G.falling || G.resolving || G.over) return;
@@ -687,19 +693,24 @@ function hardDrop() {
   f.y = landRow(G.grid, f.col);
   placeBlock();
 }
+/* 相対ドラッグ： 画面のどこをなぞっても、指の移動量だけブロックが動く（指でブロックが隠れない） */
 let pDown = null;
-function boardPointer(e, phase) {
+function gamePointer(e, phase) {
   if (phase === "up") { pDown = null; return; }
-  const rect = $("board").getBoundingClientRect();
-  const stageScale = rect.width / (COLS * CS);
-  const x = (e.clientX - rect.left) / stageScale;
-  const col = Math.max(0, Math.min(COLS - 1, Math.floor(x / CS)));
-  if (phase === "down") { pDown = { y: e.clientY, t: performance.now(), col }; if (G) G.targetCol = col; }
-  else if (phase === "move" && pDown) {
-    if (G) G.targetCol = col;
+  if (!G || G.over) return;
+  if (phase === "down") {
+    if (e.target && e.target.closest && e.target.closest("button")) return;
+    pDown = { x: e.clientX, y: e.clientY, t: performance.now(), col: G.targetCol };
+    return;
+  }
+  if (phase === "move" && pDown) {
+    const rect = $("stage").getBoundingClientRect();
+    const scale = rect.width / (PORTRAIT ? 720 : 1280);
+    const dxCells = (e.clientX - pDown.x) / scale / CS;
+    G.targetCol = Math.max(0, Math.min(COLS - 1, pDown.col + Math.round(dxCells)));
     const dy = e.clientY - pDown.y, dt = performance.now() - pDown.t;
-    if (dy > 50 && dt < 260) { hardDrop(); pDown = null; }
-  } else if (phase === "up") pDown = null;
+    if (dy > 56 && dt < 300) { hardDrop(); pDown = null; }
+  }
 }
 document.addEventListener("keydown", e => {
   if (!G || G.over) return;
@@ -740,10 +751,11 @@ function init() {
   $("ovRetry").addEventListener("click", () => { sfx("select"); $("overOv").classList.remove("active"); startGame(G ? G.mode : "endless"); });
   $("ovCover").addEventListener("click", () => { sfx("select"); $("overOv").classList.remove("active"); showScreen("cover"); });
   $("dropBtn").addEventListener("click", () => hardDrop());
-  const bw = $("boardWrap");
-  bw.addEventListener("pointerdown", e => boardPointer(e, "down"));
-  bw.addEventListener("pointermove", e => boardPointer(e, "move"));
-  bw.addEventListener("pointerup", () => boardPointer(null, "up"));
+  const gs = $("game");
+  gs.addEventListener("pointerdown", e => { gamePointer(e, "down"); if (pDown && gs.setPointerCapture) { try { gs.setPointerCapture(e.pointerId); } catch (err) {} } });
+  gs.addEventListener("pointermove", e => gamePointer(e, "move"));
+  gs.addEventListener("pointerup", () => gamePointer(null, "up"));
+  gs.addEventListener("pointercancel", () => gamePointer(null, "up"));
   document.querySelectorAll(".togglebtn").forEach(b => {
     const sync = () => b.classList.toggle("off", !settings[b.dataset.tgl]);
     sync();
