@@ -192,6 +192,43 @@ global.speechSynthesis = { cancel() {}, speak() {} };
       " wordsPerBlock=" + (wordsMade / Math.max(1, placed)).toFixed(3));
   }
 
+  /* ===== もじつみ： 縦横検出・なぞり探索・盤面生成 ===== */
+  {
+    const tg = Array.from({ length: TROWS }, () => Array(COLS).fill(null));
+    // 横の単語（3モーラ）
+    tg[6][0] = "り"; tg[6][1] = "ん"; tg[6][2] = "ご";
+    // 縦の単語（3モーラ）
+    tg[0][7] = "す"; tg[1][7] = "い"; tg[2][7] = "か";
+    // 2モーラ語は自動消去（minLen=3）の対象外
+    tg[6][4] = "い"; tg[6][5] = "ぬ";
+    const hv = findWordsHV(tg, TROWS, 3);
+    const readings = hv.map(m => m.reading).sort();
+    ok(readings.includes("りんご"), "HV horizontal: " + readings.join(","));
+    ok(readings.includes("すいか"), "HV vertical: " + readings.join(","));
+    ok(!readings.includes("いぬ"), "HV ignores 2-mora at minLen 3");
+    const hv2 = findWordsHV(tg, TROWS, 2);
+    ok(hv2.map(m => m.reading).includes("いぬ"), "HV minLen 2 finds いぬ");
+    // なぞり探索： 斜め隣接でも単語を数えられる
+    const dg = Array.from({ length: TROWS }, () => Array(COLS).fill("あ"));
+    dg[0][0] = "り"; dg[1][1] = "ん"; dg[2][2] = "ご";
+    ok(countTraceable(dg, TROWS, 1) >= 1, "traceable diagonal ringo");
+    // 接頭辞集合の健全性
+    ok(PREFIX_SET.has("りん"), "prefix set has りん");
+    ok(!PREFIX_SET.has("りんごはし"), "prefix set rejects non-prefix");
+    // 盤面生成の不変条件（3回）
+    for (let i = 0; i < 3; i++) {
+      const t0 = Date.now();
+      const board = genTsumiBoard();
+      const ms = Date.now() - t0;
+      ok(board.length === TROWS && board.every(row => row.every(v => v)), "tsumi board full " + i);
+      const pre = findWordsHV(board, TROWS, 3).length;
+      const tr = countTraceable(board, TROWS, 4);
+      ok(pre <= 2, "tsumi board pre-words " + pre + " (gen " + i + ")");
+      ok(tr >= 3, "tsumi board traceable " + tr + " (gen " + i + ")");
+      console.log("tsumi gen " + i + ": " + ms + "ms pre=" + pre + " traceable(cap4)=" + tr);
+    }
+  }
+
   console.log("\n=== RESULT: pass=" + pass + " fail=" + fail + " ===");
   if (fails.length) console.log(fails.slice(0, 20).join("\n"));
 })();

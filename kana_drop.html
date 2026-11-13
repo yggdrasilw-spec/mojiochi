@@ -49,6 +49,10 @@
   .blk.clearing { animation:blkPop .32s ease forwards; }
   @keyframes blkPop { 40% { transform:scale(1.25); filter:brightness(1.35); } 100% { transform:scale(0); opacity:0; } }
   .blk.oneaway { outline:3px dashed #ff8c42; outline-offset:-3px; }
+  .blk.inpath { outline:4px solid #fff; outline-offset:-2px; filter:brightness(1.18); z-index:3; }
+  .blk.inpath.ok { outline-color:#8ac926; }
+  #traceBanner { position:absolute; left:50%; top:78px; transform:translateX(-50%); z-index:65; background:rgba(255,255,255,.95); border-radius:999px; padding:6px 30px; font-size:36px; font-weight:900; color:#26355d; letter-spacing:.14em; box-shadow:0 5px 0 rgba(38,53,93,.15); display:none; }
+  #traceBanner.ok { color:#4d8f1f; }
   #ghost { position:absolute; border-radius:12px; border:3px dashed rgba(38,53,93,.35); pointer-events:none; }
   #panel { width:330px; display:flex; flex-direction:column; gap:13px; }
   .pbox { background:rgba(255,255,255,.88); border-radius:18px; padding:12px 18px; box-shadow:0 5px 0 rgba(38,53,93,.1); }
@@ -146,6 +150,7 @@
     <div class="coverBtns">
       <button id="startEndless" class="bigbtn">▶ エンドレス</button>
       <button id="startMission" class="bigbtn blue">🎯 お題ミッション</button>
+      <button id="startTsumi" class="bigbtn" style="background:linear-gradient(180deg,#b388ff,#7c4dff); box-shadow:0 7px 0 #5e35b1;">🧩 もじつみ（60びょう）</button>
       <button id="openZukan" class="bigbtn green">📖 ことばずかん</button>
     </div>
     <div id="coverInfo">つくった ことば： 0こ</div>
@@ -162,11 +167,13 @@
       <button class="backbtn" data-nav="cover">↩</button>
       <div class="headtitle" id="gameTitle">もじおち</div>
       <div class="headtitle" id="gameMode" style="font-size:24px; color:#47608f;"></div>
+      <div class="headtitle" id="timerVal" style="font-size:30px; color:#ff595e; display:none;"></div>
     </div>
+    <div id="traceBanner"></div>
     <div id="gameMain">
       <div id="boardWrap"><div id="board"></div></div>
       <div id="panel">
-        <div class="pbox"><div class="ptitle">つぎの もじ</div><div id="nextRow"></div></div>
+        <div class="pbox" id="nextBox"><div class="ptitle">つぎの もじ</div><div id="nextRow"></div></div>
         <div class="pbox"><div class="ptitle">スコア</div><div id="scoreVal">0</div><div id="statLine">ことば 0こ</div></div>
         <div class="pbox" id="missionBox" style="display:none"><div class="ptitle">お題</div><div id="missionList"></div></div>
         <div class="pbox"><div class="ptitle">つくった ことば</div><div id="lastWords"><div class="lw">まだ ないよ</div></div></div>
@@ -234,6 +241,12 @@ for (const [r, w, m] of DICT) {
 }
 const FREQ_LIST = [...MORA_FREQ.entries()];
 const FREQ_TOTAL = FREQ_LIST.reduce((a, [, n]) => a + n, 0);
+/* 全単語の接頭辞集合（なぞり探索の枝刈り用） */
+const PREFIX_SET = new Set();
+for (const info of WORD_INFO.values()) {
+  let s = "";
+  for (const mo of info.units) { s += mo; PREFIX_SET.add(s); }
+}
 
 /* 五十音の行ごとの色（色は背景に付け、文字色は変えない） */
 const ROWS_DEF = [
@@ -250,7 +263,7 @@ function colorOfMora(mo) { return MORA_COLOR[mo[0]] || "#eceff4"; }
 
 /* ===== 保存 ===== */
 const SAVE_KEY = "mojiochi_v1";
-let SAVE = { best: 0, zukan: {}, missionClears: 0, settings: { tts: true, se: true, hint: true } };
+let SAVE = { best: 0, best2: 0, zukan: {}, missionClears: 0, settings: { tts: true, se: true, hint: true } };
 try {
   const raw = JSON.parse(localStorage.getItem(SAVE_KEY));
   if (raw && typeof raw === "object") SAVE = Object.assign(SAVE, raw);
@@ -333,28 +346,21 @@ window.addEventListener("resize", fit);
 
 /* ===== ボード描画 ===== */
 const COLS = PARAMS.cols, ROWS = PARAMS.rows;
-let cellBgBuilt = false;
+let BOARD_ROWS = ROWS;
 function layoutBoard() {
   const b = $("board");
-  b.style.width = COLS * CS + "px"; b.style.height = ROWS * CS + "px";
-  if (!cellBgBuilt) {
-    cellBgBuilt = true;
-    for (let r = 0; r < ROWS; r++) for (let c = 0; c < COLS; c++) {
-      const d = document.createElement("div");
-      d.className = "cellbg";
-      d.style.left = (c * CS + 3) + "px"; d.style.top = (r * CS + 3) + "px";
-      d.style.width = (CS - 6) + "px"; d.style.height = (CS - 6) + "px";
-      b.appendChild(d);
-    }
-    const g = document.createElement("div"); g.id = "ghost"; b.appendChild(g);
-  } else {
-    b.querySelectorAll(".cellbg").forEach((d, i) => {
-      const r = Math.floor(i / COLS), c = i % COLS;
-      d.style.left = (c * CS + 3) + "px"; d.style.top = (r * CS + 3) + "px";
-      d.style.width = (CS - 6) + "px"; d.style.height = (CS - 6) + "px";
-    });
+  b.style.width = COLS * CS + "px"; b.style.height = BOARD_ROWS * CS + "px";
+  b.querySelectorAll(".cellbg").forEach(d => d.remove());
+  for (let r = 0; r < BOARD_ROWS; r++) for (let c = 0; c < COLS; c++) {
+    const d = document.createElement("div");
+    d.className = "cellbg";
+    d.style.left = (c * CS + 3) + "px"; d.style.top = (r * CS + 3) + "px";
+    d.style.width = (CS - 6) + "px"; d.style.height = (CS - 6) + "px";
+    b.appendChild(d);
   }
+  if (!document.getElementById("ghost")) { const g = document.createElement("div"); g.id = "ghost"; b.appendChild(g); }
   if (typeof G !== "undefined" && G) { renderSettled(); positionFalling(); }
+  if (typeof T !== "undefined" && T) renderTsumi();
 }
 function blockEl(mora, r, c, extra) {
   const d = document.createElement("div");
@@ -444,9 +450,9 @@ function landRow(grid, col) {
   for (let r = 0; r < ROWS; r++) if (grid[r][col]) return r - 1;
   return ROWS - 1;
 }
-function computeWanted(grid) {
+function computeWanted(grid, rows) {
   const wanted = new Set();
-  for (let r = 0; r < ROWS; r++) {
+  for (let r = 0; r < (rows || ROWS); r++) {
     for (const seg of segmentsInRow(grid, r)) {
       const u = seg.units;
       for (let i = 0; i < u.length; i++) {
@@ -477,10 +483,105 @@ function pickMora(grid) {
   return pickMoraFreq();
 }
 
+/* ===== もじつみ用ロジック（テスト対象） ===== */
+const TROWS = 7;
+function scanLine(units, minLen) {
+  const out = [], n = units.length;
+  for (let i = 0; i < n; i++) {
+    let s = "";
+    for (let L = 1; L <= 7 && i + L <= n; L++) {
+      s += units[i + L - 1];
+      if (L >= minLen && WORDSET.has(s)) out.push({ start: i, len: L, reading: s });
+    }
+  }
+  return out;
+}
+/* 縦・横の直線にできた単語（minLen以上）を重ならないよう最長優先で拾う */
+function findWordsHV(grid, rows, minLen) {
+  const all = [];
+  for (let r = 0; r < rows; r++) {
+    for (const seg of segmentsInRow(grid, r)) {
+      for (const m of scanLine(seg.units, minLen)) {
+        all.push({ reading: m.reading, len: m.len, cells: Array.from({ length: m.len }, (_, k) => [r, seg.start + m.start + k]) });
+      }
+    }
+  }
+  for (let c = 0; c < COLS; c++) {
+    let cur = null; const segs = [];
+    for (let r = 0; r < rows; r++) {
+      if (grid[r][c]) { if (!cur) cur = { start: r, units: [] }; cur.units.push(grid[r][c]); }
+      else if (cur) { segs.push(cur); cur = null; }
+    }
+    if (cur) segs.push(cur);
+    for (const seg of segs) {
+      for (const m of scanLine(seg.units, minLen)) {
+        all.push({ reading: m.reading, len: m.len, cells: Array.from({ length: m.len }, (_, k) => [seg.start + m.start + k, c]) });
+      }
+    }
+  }
+  all.sort((a, b) => b.len - a.len);
+  const used = new Set(), picked = [];
+  for (const m of all) {
+    if (m.cells.some(([r, c]) => used.has(r + ":" + c))) continue;
+    m.cells.forEach(([r, c]) => used.add(r + ":" + c));
+    picked.push(m);
+  }
+  return picked;
+}
+/* 8方向なぞりで作れる単語の数（重複読みは1つに数える、cap で打ち切り） */
+function countTraceable(grid, rows, cap) {
+  const found = new Set();
+  const budget = { n: 400000 };
+  const DIRS = [[-1, -1], [-1, 0], [-1, 1], [0, -1], [0, 1], [1, -1], [1, 0], [1, 1]];
+  function dfs(r, c, str, moraN, used) {
+    if (found.size >= cap || budget.n <= 0) return;
+    budget.n--;
+    if (moraN >= 2 && WORDSET.has(str)) found.add(str);
+    if (moraN >= 7) return;
+    for (const [dr, dc] of DIRS) {
+      const nr = r + dr, nc = c + dc;
+      if (nr < 0 || nr >= rows || nc < 0 || nc >= COLS) continue;
+      const key = nr + ":" + nc;
+      if (used.has(key) || !grid[nr][nc]) continue;
+      const nstr = str + grid[nr][nc];
+      if (!PREFIX_SET.has(nstr)) continue;
+      used.add(key);
+      dfs(nr, nc, nstr, moraN + 1, used);
+      used.delete(key);
+      if (found.size >= cap || budget.n <= 0) return;
+    }
+  }
+  for (let r = 0; r < rows; r++) for (let c = 0; c < COLS; c++) {
+    if (grid[r][c]) dfs(r, c, grid[r][c], 1, new Set([r + ":" + c]));
+    if (found.size >= cap) return found.size;
+  }
+  return found.size;
+}
+/* 初期盤面： 列にできている単語は少なめ（自動で溶けない）、でもなぞれる単語は必ずある */
+function genTsumiBoard() {
+  let best = null, bestScore = -1e9;
+  for (let attempt = 0; attempt < 40; attempt++) {
+    const grid = Array.from({ length: TROWS }, () => Array.from({ length: COLS }, () => pickMoraFreq()));
+    const pre = findWordsHV(grid, TROWS, 3).length;
+    const tr = countTraceable(grid, TROWS, 4);
+    const score = tr * 10 - pre * 3;
+    if (score > bestScore) { bestScore = score; best = grid; }
+    if (pre <= 2 && tr >= 3) return grid;
+  }
+  return best;
+}
+
 /* ===== ゲーム進行 ===== */
 let G = null;
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 function startGame(mode) {
+  if (mode === "tsumi") { startTsumi(); return; }
+  curMode = mode;
+  T = null;
+  BOARD_ROWS = ROWS;
+  $("timerVal").style.display = "none";
+  $("nextBox").style.display = "";
+  $("dropBtn").style.display = "";
   G = { mode, grid: newGrid(), falling: null, queue: [pickMoraFreq(), pickMoraFreq()],
         score: 0, words: 0, moraCleared: 0, maxChain: 0, resolving: false, over: false,
         soft: false, targetCol: 3, lastWords: [], missions: mode === "mission" ? genMissions() : null,
@@ -489,6 +590,7 @@ function startGame(mode) {
   $("gameMode").textContent = mode === "mission" ? "🎯 お題ミッション" : "▶ エンドレス";
   $("missionBox").style.display = mode === "mission" ? "" : "none";
   showScreen("game");
+  layoutBoard();
   renderSettled(); updatePanel(); renderNext(); spawnNext();
 }
 function renderNext() {
@@ -655,10 +757,200 @@ function missionProgress(ms, m, chain) {
   else if (ms.k === "chain" && chain >= ms.n) ms.prog = Math.max(ms.prog, 1);
 }
 
+/* ===== もじつみ（第2モード） ===== */
+let T = null, curMode = "endless", traceActive = false, tsumiEls = [];
+function startTsumi() {
+  curMode = "tsumi";
+  G = null;
+  T = { grid: genTsumiBoard(), path: [], score: 0, words: 0, maxChain: 0, left: 60,
+        over: false, resolving: false, lastWords: [], lastShownSec: 99 };
+  BOARD_ROWS = TROWS;
+  $("gameTitle").textContent = "もじつみ";
+  $("gameMode").textContent = "🧩 もじを なぞって ことばを つくろう";
+  $("timerVal").style.display = "";
+  $("timerVal").textContent = "⏱ 60";
+  $("nextBox").style.display = "none";
+  $("dropBtn").style.display = "none";
+  $("missionBox").style.display = "none";
+  showScreen("game");
+  layoutBoard();
+  renderTsumi();
+  updateTsumiPanel();
+}
+function renderTsumi() {
+  const b = $("board");
+  tsumiEls.forEach(e => e.remove()); tsumiEls = [];
+  if (!T) return;
+  for (let r = 0; r < TROWS; r++) for (let c = 0; c < COLS; c++) {
+    const mo = T.grid[r][c];
+    if (!mo) continue;
+    const d = blockEl(mo, r, c);
+    d.dataset.r = r; d.dataset.c = c;
+    b.appendChild(d); tsumiEls.push(d);
+  }
+  updateTraceUI();
+}
+function updateTraceUI() {
+  const banner = $("traceBanner");
+  if (!T || !T.path.length) {
+    banner.style.display = "none";
+    tsumiEls.forEach(el => el.classList.remove("inpath", "ok"));
+    return;
+  }
+  const str = T.path.map(([r, c]) => T.grid[r][c]).join("");
+  const isWord = T.path.length >= 2 && WORDSET.has(str);
+  banner.textContent = str + (isWord ? " ✓ ことば！" : "");
+  banner.classList.toggle("ok", isWord);
+  banner.style.display = "block";
+  const keys = new Set(T.path.map(([r, c]) => r + ":" + c));
+  tsumiEls.forEach(el => {
+    const on = keys.has(el.dataset.r + ":" + el.dataset.c);
+    el.classList.toggle("inpath", on);
+    el.classList.toggle("ok", on && isWord);
+  });
+}
+function flashTrace(text) {
+  const b = $("traceBanner");
+  b.textContent = text; b.classList.remove("ok"); b.style.display = "block";
+  setTimeout(() => { if (!T || !T.path.length) b.style.display = "none"; }, 1100);
+}
+function updateTsumiPanel() {
+  $("scoreVal").textContent = T.score;
+  $("statLine").textContent = "ことば " + T.words + "こ";
+  $("lastWords").innerHTML = T.lastWords.length
+    ? T.lastWords.map(l => '<div class="lw"><b>' + l.w + "</b>（" + l.reading + "） +" + l.gain + "<br>" + l.m + "</div>").join("")
+    : '<div class="lw">まだ ないよ</div>';
+}
+function refillPick() {
+  const wanted = computeWanted(T.grid, TROWS);
+  if (wanted.size && Math.random() < 0.3) {
+    const a = [...wanted];
+    return a[Math.floor(Math.random() * a.length)];
+  }
+  return pickMoraFreq();
+}
+function tsumiSettle() {
+  for (let c = 0; c < COLS; c++) {
+    const stack = [];
+    for (let r = TROWS - 1; r >= 0; r--) if (T.grid[r][c]) stack.push(T.grid[r][c]);
+    for (let r = TROWS - 1; r >= 0; r--) T.grid[r][c] = stack[TROWS - 1 - r] || null;
+    for (let r = 0; r < TROWS; r++) if (!T.grid[r][c]) T.grid[r][c] = refillPick();
+  }
+}
+async function tsumiClearStep(matches, chain) {
+  for (const m of matches) {
+    const gain = m.len * m.len * 10 * chain;
+    T.score += gain; T.words++;
+    SAVE.zukan[m.reading] = (SAVE.zukan[m.reading] || 0) + 1;
+    const info = WORD_INFO.get(m.reading);
+    T.lastWords.unshift({ reading: m.reading, w: info ? info.w : m.reading, m: info ? info.m : "", gain });
+  }
+  T.lastWords = T.lastWords.slice(0, 3);
+  saveSave();
+  const main = matches.reduce((a, b) => (b.len > a.len ? b : a), matches[0]);
+  showToast({ reading: main.reading, len: main.len }, WORD_INFO.get(main.reading), chain);
+  speak(main.reading);
+  if (chain >= 2) {
+    const ct = $("chainToast");
+    ct.textContent = chain + " れんさ！";
+    ct.style.display = "block";
+    setTimeout(() => { ct.style.display = "none"; }, 900);
+  }
+  const keys = new Set();
+  matches.forEach(m => m.cells.forEach(([r, c]) => keys.add(r + ":" + c)));
+  tsumiEls.forEach(el => { if (keys.has(el.dataset.r + ":" + el.dataset.c)) el.classList.add("clearing"); });
+  sfx("clear", chain);
+  updateTsumiPanel();
+  await sleep(360);
+  matches.forEach(m => m.cells.forEach(([r, c]) => { T.grid[r][c] = null; }));
+  tsumiSettle();
+  renderTsumi();
+  await sleep(90);
+}
+async function tsumiResolve(first) {
+  T.resolving = true;
+  await tsumiClearStep([first], 1);
+  let chain = 1;
+  for (;;) {
+    const ms = findWordsHV(T.grid, TROWS, 3);
+    if (!ms.length) break;
+    chain++;
+    await tsumiClearStep(ms, chain);
+  }
+  T.maxChain = Math.max(T.maxChain, chain);
+  if (!T.over && countTraceable(T.grid, TROWS, 1) === 0) {
+    T.grid = genTsumiBoard();
+    renderTsumi();
+    flashTrace("シャッフル！");
+  }
+  T.resolving = false;
+}
+function tsumiFinish() {
+  if (!T || T.over) return;
+  T.over = true;
+  T.path = [];
+  updateTraceUI();
+  const isBest = T.score > (SAVE.best2 || 0);
+  if (isBest) { SAVE.best2 = T.score; saveSave(); }
+  sfx("over");
+  $("ovTitle").textContent = "⏱ じかん しゅうりょう！";
+  $("ovText").innerHTML = "スコア <b>" + T.score + "</b>" + (isBest ? "（ベスト更新！）" : "（ベスト " + (SAVE.best2 || 0) + "）") +
+    "<br>つくった ことば " + T.words + "こ ／ れんさ さいだい " + T.maxChain + "れんさ";
+  $("overOv").classList.add("active");
+}
+function cellFromEvent(e) {
+  const rect = $("board").getBoundingClientRect();
+  const scale = rect.width / (COLS * CS);
+  const c = Math.floor((e.clientX - rect.left) / scale / CS);
+  const r = Math.floor((e.clientY - rect.top) / scale / CS);
+  if (r < 0 || r >= TROWS || c < 0 || c >= COLS) return null;
+  return [r, c];
+}
+function tsumiPointer(e, phase) {
+  if (!T || T.over) return;
+  if (phase === "down") {
+    if (T.resolving) return;
+    const cell = cellFromEvent(e);
+    if (cell) { T.path = [cell]; traceActive = true; updateTraceUI(); }
+  } else if (phase === "move" && traceActive && T.path.length) {
+    const cell = cellFromEvent(e);
+    if (!cell) return;
+    const last = T.path[T.path.length - 1];
+    if (cell[0] === last[0] && cell[1] === last[1]) return;
+    const prev = T.path[T.path.length - 2];
+    if (prev && cell[0] === prev[0] && cell[1] === prev[1]) { T.path.pop(); updateTraceUI(); return; }
+    if (Math.abs(cell[0] - last[0]) <= 1 && Math.abs(cell[1] - last[1]) <= 1 &&
+        !T.path.some(([r, c]) => r === cell[0] && c === cell[1])) {
+      T.path.push(cell);
+      updateTraceUI();
+    }
+  } else if (phase === "up") {
+    if (!traceActive) return;
+    traceActive = false;
+    const path = T.path;
+    T.path = [];
+    if (path.length >= 2 && !T.resolving && !T.over) {
+      const str = path.map(([r, c]) => T.grid[r][c]).join("");
+      if (WORDSET.has(str)) {
+        updateTraceUI();
+        tsumiResolve({ reading: str, len: path.length, cells: path });
+        return;
+      }
+    }
+    updateTraceUI();
+  }
+}
+
 /* ===== メインループ・入力 ===== */
 let lastT = 0;
 function loop(t) {
   const dt = Math.min(0.05, (t - lastT) / 1000 || 0); lastT = t;
+  if (T && !T.over && $("game").classList.contains("active")) {
+    T.left -= dt;
+    const sec = Math.max(0, Math.ceil(T.left));
+    if (sec !== T.lastShownSec) { T.lastShownSec = sec; $("timerVal").textContent = "⏱ " + sec; }
+    if (T.left <= 0) tsumiFinish();
+  }
   if (G && G.falling && !G.resolving && !G.over) {
     const f = G.falling;
     trySlide();
@@ -747,8 +1039,9 @@ function init() {
   document.querySelectorAll("[data-nav]").forEach(b => b.addEventListener("click", () => { sfx("select"); showScreen(b.dataset.nav); }));
   $("startEndless").addEventListener("click", () => { sfx("select"); startGame("endless"); });
   $("startMission").addEventListener("click", () => { sfx("select"); startGame("mission"); });
+  $("startTsumi").addEventListener("click", () => { sfx("select"); startGame("tsumi"); });
   $("openZukan").addEventListener("click", () => { sfx("select"); showScreen("zukan"); });
-  $("ovRetry").addEventListener("click", () => { sfx("select"); $("overOv").classList.remove("active"); startGame(G ? G.mode : "endless"); });
+  $("ovRetry").addEventListener("click", () => { sfx("select"); $("overOv").classList.remove("active"); startGame(curMode); });
   $("ovCover").addEventListener("click", () => { sfx("select"); $("overOv").classList.remove("active"); showScreen("cover"); });
   $("dropBtn").addEventListener("click", () => hardDrop());
   const gs = $("game");
@@ -756,6 +1049,11 @@ function init() {
   gs.addEventListener("pointermove", e => gamePointer(e, "move"));
   gs.addEventListener("pointerup", () => gamePointer(null, "up"));
   gs.addEventListener("pointercancel", () => gamePointer(null, "up"));
+  const bw2 = $("boardWrap");
+  bw2.addEventListener("pointerdown", e => { tsumiPointer(e, "down"); if (traceActive && bw2.setPointerCapture) { try { bw2.setPointerCapture(e.pointerId); } catch (err) {} } });
+  bw2.addEventListener("pointermove", e => tsumiPointer(e, "move"));
+  bw2.addEventListener("pointerup", () => tsumiPointer(null, "up"));
+  bw2.addEventListener("pointercancel", () => tsumiPointer(null, "up"));
   document.querySelectorAll(".togglebtn").forEach(b => {
     const sync = () => b.classList.toggle("off", !settings[b.dataset.tgl]);
     sync();
