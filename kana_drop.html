@@ -618,6 +618,8 @@ function startGame(mode) {
   if (mode === "tsumi") { startTsumi(); return; }
   curMode = mode;
   T = null;
+  document.querySelectorAll("#board .blk").forEach(e => e.remove());
+  settledEls = [];
   BOARD_ROWS = ROWS;
   $("timerVal").style.display = "none";
   $("nextBox").style.display = "";
@@ -902,7 +904,7 @@ function shakeField() {
 /* 曲線フィールド境界との衝突（符号付き距離の勾配方向へ押し戻し、法線速度を弾性で反射） */
 function collideField(b) {
   const sd = sdField(b.x, b.y);
-  const limit = -TRAD;
+  const limit = -TRAD - 0.04; /* 描画した枠の内側に円が収まるよう少し余裕を持たせる */
   if (sd <= limit) return;
   const e = 0.02;
   let gx = sdField(b.x + e, b.y) - sdField(b.x - e, b.y);
