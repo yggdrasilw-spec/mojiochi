@@ -228,6 +228,9 @@ global.speechSynthesis = { cancel() {}, speak() {} };
     /* 追加辞書： 元辞書に欠けていた主要地名が入っていること */
     for (const p of ["おのみち", "ふくやま", "みはら", "なごや", "さっぽろ", "よこはま", "こうべ", "まつやま", "たかまつ", "いわて", "えひめ"])
       ok(WORDSET.has(p), "extra dict has place name " + p);
+    /* 地名・駅名の専用追加辞書（japan-places）が本体辞書に取り込まれていること */
+    ok(WORDSET.has("しんしらおか"), "japan-places station name しんしらおか included");
+    ok(DICT.length > 100000, "dict includes japan-places (total " + DICT.length + ")");
   }
   /* ===== letterFix： 単語ゼロの盤面に単語を埋め込めること ===== */
   {

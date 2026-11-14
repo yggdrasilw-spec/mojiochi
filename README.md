@@ -6,7 +6,7 @@
 
 - `kana_drop.html` — 納品物（単一HTML、辞書同梱）。**直接編集しない**
 - `kana_drop_template.html` — 本体テンプレート。編集はここに行う
-- `dict.json` — ゲーム用辞書（59,984語： 読み・表記・意味）
+- `dict.json` — ゲーム用辞書（111,070語： 読み・表記・意味）
 - `build.py` — テンプレートに dict.json を注入して kana_drop.html を生成
 - `build_dict.py` — しりとり辞書（hiragana-ninshiki の配信データ）から dict.json を抽出（要ネット）
 - `dict_src/` — 辞書抽出の作業データ（再生成可能）
