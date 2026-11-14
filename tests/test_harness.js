@@ -275,6 +275,26 @@ global.speechSynthesis = { cancel() {}, speak() {} };
     await new Promise(r => setTimeout(r, 500));
     T = null;
   }
+  /* ===== 小さい文字の代用： っは出さず、つで代用できる ===== */
+  {
+    ok(resolveReading("がつこう") === "がっこう", "sokuon: つ substitutes for っ (がつこう→がっこう)");
+    ok(resolveReading("じゆう") === "じゆう", "sokuon: exact word wins over substitution (じゆう stays じゆう)");
+    ok(resolveReading("りんご") === "りんご", "sokuon: plain word resolves as-is");
+    ok(resolveReading("んんん") === null, "sokuon: non-word stays null");
+    let bad = 0;
+    for (let i = 0; i < 800; i++) { const mo = pickMoraTsumi(); if (mo.length === 1 && SMALL2FULL[mo]) bad++; }
+    ok(bad === 0, "sokuon: pickMoraTsumi never deals a standalone small kana");
+    const bodies = [mkB("が", 0.5, 3), mkB("つ", 1.45, 3), mkB("こ", 2.4, 3), mkB("う", 3.35, 3)];
+    ok(countTraceableGraph(bodies, 1) >= 1, "sokuon: graph solver finds がっこう via つ");
+    T = { bodies: bodies.slice(), path: [], score: 0, words: 0, maxChain: 0, left: 90, over: false, settled: true,
+          started: true, lastWords: [], lastShownSec: 99, shakes: 3, spawnQueue: [], spawnT: 0, simT: 0,
+          rainEnd: null, combo: 0, lastClearAt: 0, queue: [], busy: false, executing: null };
+    submitWord(T.bodies.slice());
+    await new Promise(r => setTimeout(r, 600));
+    ok(T.words === 1 && T.lastWords[0] && T.lastWords[0].reading === "がっこう",
+       "sokuon: cleared word is recorded under its true reading がっこう");
+    T = null;
+  }
   /* ===== フルシミュレーション： ぱらぱら落ちて静止し、単語が保証される ===== */
   {
     startTsumi();

@@ -273,6 +273,33 @@ for (const info of WORD_INFO.values()) {
   let s = "";
   for (const mo of info.units) { s += mo; PREFIX_SET.add(s); }
 }
+/* 小さい文字の代用ルール（もじつみ用）： 単独の小さい文字はブロックとして出さず、
+   大きい文字で代用できる。っ→つ、ゃ→や、ぁ→あ 等をまとめて扱う。
+   拗音などの合体ユニット（きゃ・しゃ）は1ブロックのまま扱い、対象外 */
+const SMALL2FULL = { "っ": "つ", "ゃ": "や", "ゅ": "ゆ", "ょ": "よ", "ぁ": "あ", "ぃ": "い", "ぅ": "う", "ぇ": "え", "ぉ": "お", "ゎ": "わ" };
+const normalizeUnit = u => (u.length === 1 && SMALL2FULL[u]) ? SMALL2FULL[u] : u;
+const NORM_MAP = new Map(); /* 代用で読んだ文字列 → 本来の読み */
+for (const [r, info] of WORD_INFO) {
+  const n = info.units.map(normalizeUnit).join("");
+  if (n !== r && !NORM_MAP.has(n)) NORM_MAP.set(n, r);
+}
+const TSUMI_WORDSET = new Set([...WORDSET, ...NORM_MAP.keys()]);
+const TSUMI_PREFIX_SET = new Set(PREFIX_SET);
+for (const info of WORD_INFO.values()) {
+  let s = "";
+  for (const mo of info.units) { s += normalizeUnit(mo); TSUMI_PREFIX_SET.add(s); }
+}
+/* なぞった文字列→辞書の読み。完全一致を優先し、なければ小さい文字の代用として解決する */
+function resolveReading(s) {
+  if (WORDSET.has(s)) return s;
+  return NORM_MAP.get(s) || null;
+}
+/* もじつみ用の出現抽選： 単独の小さい文字は出さない */
+function pickMoraTsumi() {
+  let mo = pickMoraFreq();
+  while (mo.length === 1 && SMALL2FULL[mo]) mo = pickMoraFreq();
+  return mo;
+}
 
 /* 五十音の行ごとの色（色は背景に付け、文字色は変えない） */
 const ROWS_DEF = [
@@ -548,8 +575,8 @@ const TRAD = 0.46;       // ブロック半径（単位）
 const TFIELD_R = 2.2;    // フィールドの角の丸み（単位）＝思い切った曲線
 const TBODIES = 28;      // ブロック数（フィールドの半分くらい。詰まりすぎない量）
 const TSUMI_TIME = 90;   // 制限時間（秒）
-const ADJ_D = TRAD * 2 * 1.5;  // これより近ければ「つながっている」とみなす中心間距離
-const CONNECT_D = 0.95;  // 指がこの距離まで近づけばブロックを掴む
+const ADJ_D = TRAD * 2 * 1.75;  // これより近ければ「つながっている」とみなす中心間距離（少し遠くても繋がる）
+const CONNECT_D = 1.25;  // 指がこの距離まで近づけばブロックを掴む
 /* 角丸矩形の符号付き距離（内側が負）。フィールド境界との衝突に使う */
 function sdField(x, y) {
   const qx = Math.abs(x - TW / 2) - (TW / 2 - TFIELD_R);
@@ -573,12 +600,12 @@ function countTraceableGraph(bodies, cap) {
   function dfs(i, str, depth, used) {
     if (found.size >= cap || budget.n <= 0) return;
     budget.n--;
-    if (depth >= 2 && WORDSET.has(str)) found.add(str);
+    if (depth >= 2 && TSUMI_WORDSET.has(str)) found.add(str);
     if (depth >= 7) return;
     for (const j of adj[i]) {
       if (used.has(j)) continue;
       const ns = str + bodies[j].mora;
-      if (!PREFIX_SET.has(ns)) continue;
+      if (!TSUMI_PREFIX_SET.has(ns)) continue;
       used.add(j);
       dfs(j, ns, depth + 1, used);
       used.delete(j);
@@ -626,7 +653,7 @@ function letterFix(bodies) {
     const pool = wordsByLen()[L];
     const w = pool[Math.floor(Math.random() * pool.length)];
     const units = WORD_INFO.get(w).units;
-    path.forEach((bi, k) => setBodyMora(bodies[bi], units[k]));
+    path.forEach((bi, k) => setBodyMora(bodies[bi], normalizeUnit(units[k]))); /* 小さい文字は大きい文字で埋め込む */
   }
 }
 
@@ -872,7 +899,7 @@ function startTsumi() {
   layoutBoard();
   /* 最初の文字： 頻度で56個用意し、上からぱらぱら落とす（単語の保証は静止後に letterFix で行う） */
   const letters = [];
-  while (letters.length < TBODIES) letters.push(pickMoraFreq());
+  while (letters.length < TBODIES) letters.push(pickMoraTsumi());
   T.spawnQueue = letters.map(mo => ({ mora: mo, x: 2.1 + Math.random() * 3.8 }));
   updateTsumiPanel();
 }
@@ -897,7 +924,7 @@ function updateTraceUI() {
   for (const b of T.bodies) b.el.classList.remove("inpath", "ok");
   if (!T.path.length) { banner.style.display = "none"; drawTraceLine(); return; }
   const str = T.path.map(b => b.mora).join("");
-  const isWord = T.path.length >= 2 && WORDSET.has(str);
+  const isWord = T.path.length >= 2 && !!resolveReading(str);
   banner.textContent = str + (isWord ? " ✓ ことば！" : "");
   banner.classList.toggle("ok", isWord);
   banner.style.display = "block";
@@ -1114,7 +1141,7 @@ async function pumpQueue() {
   const q = T.queue.shift();
   const path = q.path;
   updateTsumiPanel();
-  const valid = path.every(b => T.bodies.includes(b)) && WORDSET.has(path.map(b => b.mora).join(""));
+  const valid = path.every(b => T.bodies.includes(b)) && !!resolveReading(path.map(b => b.mora).join(""));
   if (!valid) { path.forEach(b => { if (b.el) b.el.classList.remove("reserved"); }); pumpQueue(); return; }
   T.busy = true;
   T.executing = path;
@@ -1127,7 +1154,8 @@ async function pumpQueue() {
 /* なぞった単語を消す。自動連鎖はしない。消えた分は上からぱらぱら補充される */
 async function clearWord(pathBodies, atTime) {
   pathBodies.forEach(b => { if (b.el) b.el.classList.remove("reserved"); });
-  const reading = pathBodies.map(b => b.mora).join("");
+  const traced = pathBodies.map(b => b.mora).join("");
+  const reading = resolveReading(traced) || traced; /* つで代用した場合は本来の読み（がっこう等）で記録・読み上げ */
   const len = pathBodies.length;
   const now = atTime || Date.now(); /* コンボ判定は「示した時刻」で行う（実行待ちで損をしない） */
   T.combo = (now - T.lastClearAt < 4000) ? T.combo + 1 : 1;
@@ -1156,7 +1184,7 @@ async function clearWord(pathBodies, atTime) {
   T.bodies = T.bodies.filter(b => !pathBodies.includes(b));
   for (const b of T.bodies) { b.sleep = false; b.rest = 0; }
   /* 補充は上書きせず積む（連続消去で前の補充が消えてブロック数が減るのを防ぐ） */
-  for (let i = 0; i < pathBodies.length; i++) T.spawnQueue.push({ mora: pickMoraFreq(), x: 2.1 + Math.random() * 3.8 });
+  for (let i = 0; i < pathBodies.length; i++) T.spawnQueue.push({ mora: pickMoraTsumi(), x: 2.1 + Math.random() * 3.8 });
   T.spawnT = 0; T.simT = 0; T.rainEnd = null;
 }
 function tsumiFinish() {
@@ -1183,13 +1211,15 @@ function pointerUnits(e) {
 let lastTraceP = null;
 function nearestBody(fx, fy) {
   const skip = reservedBodies();
-  let best = null, bestD = CONNECT_D;
+  let bestIn = null, bestInD = Infinity, best = null, bestD = CONNECT_D;
   for (const b of T.bodies) {
     if (skip.has(b)) continue;
     const d = Math.hypot(fx - b.x, fy - b.y);
+    /* 押した円の中にあるブロックを最優先する（掴んだ時に隣のブロックへズレない） */
+    if (d < TRAD * 1.02 && d < bestInD) { bestInD = d; bestIn = b; }
     if (d < bestD) { bestD = d; best = b; }
   }
-  return best;
+  return bestIn || best;
 }
 function tryConnectBody(fx, fy) {
   const b = nearestBody(fx, fy);
@@ -1237,7 +1267,7 @@ function tsumiPointer(e, phase) {
     for (const b of path) b.pin = false;
     if (path.length >= 2) {
       const str = path.map(b => b.mora).join("");
-      if (WORDSET.has(str)) { updateTraceUI(); submitWord(path); return; }
+      if (resolveReading(str)) { updateTraceUI(); submitWord(path); return; }
     }
     updateTraceUI();
   }
