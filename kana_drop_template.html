@@ -590,11 +590,17 @@ function pickMoraFreq() {
   for (const [mo, n] of FREQ_LIST) { x -= n; if (x <= 0) return mo; }
   return "あ";
 }
-/* 落ちものの出現は完全な一様ランダム。頻出モーラへの寄せも、繋がりやすくする
-   出現アシストもしない（意図せず単語ができすぎるという本人の指摘による）。
-   頻出寄せの pickMoraFreq は、もじつみ側の出現でのみ使い続ける */
+/* 落ちものの出現：基本の仮名は一様ランダム、拗音は辞書内での実際の出現割合（約5%）に
+   抑制し、旧仮名（ゑ）や単独の小さい母音などは出さない。全ユニット一様だと拗音が
+   33%も出てしまう（ユニット種類の1/3が拗音のため）。頻出モーラへの寄せと
+   出現アシストはしない。頻出寄せの pickMoraFreq は、もじつみ側の出現でのみ使い続ける */
+const SPAWN_EXCLUDE = new Set(["ぁ", "ぃ", "ぅ", "ぇ", "ぉ", "ゑ", "ゔ"]);
+const SPAWN_BASE = MORA_UNIFORM.filter(u => u.length === 1 && !SPAWN_EXCLUDE.has(u));
+const SPAWN_DIGRAPH = MORA_UNIFORM.filter(u => u.length > 1);
+const DIGRAPH_P = 0.05;
 function pickMora(grid) {
-  return MORA_UNIFORM[Math.floor(Math.random() * MORA_UNIFORM.length)];
+  if (Math.random() < DIGRAPH_P) return SPAWN_DIGRAPH[Math.floor(Math.random() * SPAWN_DIGRAPH.length)];
+  return SPAWN_BASE[Math.floor(Math.random() * SPAWN_BASE.length)];
 }
 
 /* ===== もじつみ用ロジック（テスト対象） ===== */

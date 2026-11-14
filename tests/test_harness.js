@@ -170,12 +170,17 @@ global.speechSynthesis = { cancel() {}, speak() {} };
   for (let i = 0; i < 4000; i++) { const mo = pickMoraFreq(); counts[mo] = (counts[mo] || 0) + 1; if (!MORA_FREQ.has(mo)) { ok(false, "spawn unknown mora " + mo); break; } }
   ok((counts["ん"] || 0) > 100, "spawn includes ん often: " + counts["ん"]);
   ok(Object.keys(counts).length > 60, "spawn variety " + Object.keys(counts).length);
-  // 落ちものの出現（pickMora）は一様ランダム：頻出モーラへの偏りがないこと
+  // 落ちものの出現（pickMora）：基本仮名は一様、拗音は約5%に抑制、旧仮名などは出ないこと
   {
     const cnt = {};
     for (let i = 0; i < 20000; i++) { const mo = pickMora(newGrid()); cnt[mo] = (cnt[mo] || 0) + 1; }
-    ok((cnt["ん"] || 0) < 400, "falling spawn uniform: ん x" + (cnt["ん"] || 0) + "/20000 (weighted would be ~1000)");
-    ok(Object.keys(cnt).length >= MORA_UNIFORM.length - 2, "falling spawn covers all units: " + Object.keys(cnt).length + "/" + MORA_UNIFORM.length);
+    ok((cnt["ん"] || 0) < 400, "falling spawn no freq bias: ん x" + (cnt["ん"] || 0) + "/20000");
+    for (const bad of ["ゑ", "ぁ", "ぃ", "ぅ", "ぇ", "ぉ", "ゔ"])
+      ok(!cnt[bad], "falling spawn excludes " + bad);
+    const dig = Object.entries(cnt).filter(([u]) => u.length > 1).reduce((a, [, n]) => a + n, 0);
+    ok(dig > 400 && dig < 1600, "digraph share ~5%: " + (dig / 200).toFixed(1) + "%");
+    ok(Object.keys(cnt).length >= SPAWN_BASE.length + SPAWN_DIGRAPH.length - 2,
+       "falling spawn covers spawnable units: " + Object.keys(cnt).length);
   }
 
   /* ===== 色・行 ===== */
