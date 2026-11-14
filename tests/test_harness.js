@@ -244,6 +244,68 @@ global.speechSynthesis = { cancel() {}, speak() {} };
     ok(changed >= 4, "shuffle actually rearranges (" + changed + "/5)");
   }
 
+  /* ===== 近接判定（円形ブロックの隙間を繋ぐ） ===== */
+  {
+    const eq = (a, b) => JSON.stringify(a) === JSON.stringify(b);
+    ok(eq(nearestCell(0.5, 0.5), [0, 0]), "nearestCell center");
+    const mid = nearestCell(1.0, 0.5);
+    ok(mid && (eq(mid, [0, 0]) || eq(mid, [0, 1])), "nearestCell gap midpoint connects: " + JSON.stringify(mid));
+    const diag = nearestCell(1.0, 1.0);
+    ok(diag && diag[0] <= 1 && diag[1] <= 1, "nearestCell diagonal gap connects: " + JSON.stringify(diag));
+    ok(nearestCell(0.5, -0.4) === null, "nearestCell far outside is null");
+    ok(nearestCell(-1.5, 3.0) === null, "nearestCell off-board is null");
+  }
+  /* ===== 物理後の整列（assignCells） ===== */
+  {
+    // 正確な中心位置にあるブロックは、元のセルへ正確に戻る
+    const blocks = [];
+    for (let r = 0; r < TROWS; r++) for (let c = 0; c < COLS; c++)
+      blocks.push({ x: c + 0.5, y: r + 0.5, mora: r + ":" + c });
+    // 順序をシャッフルして渡しても割り当ては一対一
+    const shuffledIn = [...blocks].sort(() => Math.random() - 0.5);
+    const assign = assignCells(shuffledIn, TROWS, COLS);
+    ok(assign.length === TROWS * COLS, "assign covers all cells");
+    ok(new Set(assign.map(a => a.i)).size === assign.length, "assign is one-to-one");
+    let exact = 0;
+    for (const a of assign) if (shuffledIn[a.i].mora === a.r + ":" + a.c) exact++;
+    ok(exact === assign.length, "assign returns blocks to home cells (" + exact + "/" + assign.length + ")");
+    // 少し揺れた位置でも、各ブロックは近いセルに収まる
+    const jittered = blocks.map(b => ({ x: b.x + (Math.random() - 0.5) * 0.5, y: b.y + (Math.random() - 0.5) * 0.5, mora: b.mora }));
+    const assign2 = assignCells(jittered, TROWS, COLS);
+    let far = 0;
+    for (const a of assign2) {
+      const [hr, hc] = jittered[a.i].mora.split(":").map(Number);
+      if (Math.abs(hr - a.r) > 1 || Math.abs(hc - a.c) > 1) far++;
+    }
+    ok(far === 0, "assign keeps jittered blocks local (far=" + far + ")");
+  }
+
+  /* ===== ゆらす物理演算のシミュレーション ===== */
+  {
+    T = { grid: genTsumiBoard(), path: [], score: 0, words: 0, maxChain: 0, left: 60,
+          over: false, resolving: false, lastWords: [], lastShownSec: 99, shakes: 3, shaking: false };
+    renderTsumi();
+    const msBefore = T.grid.flat().sort().join(",");
+    shakeField();
+    ok(T.phys && T.phys.blocks.length === TROWS * COLS, "phys blocks created");
+    let iter = 0, outOfBounds = 0;
+    while (T.phys && iter < 600) {
+      stepPhys(1 / 60);
+      iter++;
+      if (T.phys) for (const b of T.phys.blocks) {
+        if (b.x < -0.6 || b.x > COLS + 0.6 || b.y < -0.6 || b.y > TROWS + 0.6) outOfBounds++;
+      }
+    }
+    ok(!T.phys, "phys settled in " + iter + " frames");
+    ok(outOfBounds === 0, "phys stayed in bounds (" + outOfBounds + ")");
+    await new Promise(r => setTimeout(r, 450));
+    ok(T.shaking === false, "shake finished");
+    ok(T.grid.every(row => row.every(v => v)), "grid full after shake");
+    ok(T.grid.flat().sort().join(",") === msBefore, "multiset preserved after phys shake");
+    console.log("phys shake: settled in " + (iter / 60).toFixed(2) + "s, traceable=" + countTraceable(T.grid, TROWS, 4));
+    T = null;
+  }
+
   console.log("\n=== RESULT: pass=" + pass + " fail=" + fail + " ===");
   if (fails.length) console.log(fails.slice(0, 20).join("\n"));
 })();

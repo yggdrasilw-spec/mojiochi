@@ -53,8 +53,10 @@
   .blk.inpath.ok { outline-color:#8ac926; }
   #traceBanner { position:absolute; left:50%; top:78px; transform:translateX(-50%); z-index:65; background:rgba(255,255,255,.95); border-radius:999px; padding:6px 30px; font-size:36px; font-weight:900; color:#26355d; letter-spacing:.14em; box-shadow:0 5px 0 rgba(38,53,93,.15); display:none; }
   #traceBanner.ok { color:#4d8f1f; }
-  #board.shaking { animation:boardShake .45s ease; }
-  @keyframes boardShake { 0%,100% { transform:translate(0,0); } 20% { transform:translate(-7px,3px) rotate(-.6deg); } 40% { transform:translate(6px,-3px); } 60% { transform:translate(-5px,-2px) rotate(.5deg); } 80% { transform:translate(4px,2px); } }
+  /* もじつみ： 円形ブロックと丸いフィールド（ツムツム風） */
+  .blk.tsumiBlk { border-radius:50%; box-shadow:inset 0 -6px 0 rgba(38,53,93,.16), inset 3px 4px 0 rgba(255,255,255,.5), 0 3px 0 rgba(38,53,93,.18); }
+  #board.tsumiField { border-radius:30px; background:rgba(255,255,255,.42); }
+  #board.tsumiField .cellbg { display:none; }
   #ghost { position:absolute; border-radius:12px; border:3px dashed rgba(38,53,93,.35); pointer-events:none; }
   #panel { width:330px; display:flex; flex-direction:column; gap:13px; }
   .pbox { background:rgba(255,255,255,.88); border-radius:18px; padding:12px 18px; box-shadow:0 5px 0 rgba(38,53,93,.1); }
@@ -561,6 +563,22 @@ function countTraceable(grid, rows, cap) {
   }
   return found.size;
 }
+/* 物理演算のあと、各セルへ最も近いブロックを割り当てる（全セルちょうど1つずつ） */
+function assignCells(blocks, rows, cols) {
+  const remaining = blocks.map((b, i) => ({ i, x: b.x, y: b.y }));
+  const out = [];
+  for (let r = 0; r < rows; r++) for (let c = 0; c < cols; c++) {
+    const cx = c + 0.5, cy = r + 0.5;
+    let bi = 0, bd = Infinity;
+    remaining.forEach((b, k) => {
+      const d = (b.x - cx) * (b.x - cx) + (b.y - cy) * (b.y - cy);
+      if (d < bd) { bd = d; bi = k; }
+    });
+    const picked = remaining.splice(bi, 1)[0];
+    out.push({ r, c, i: picked.i });
+  }
+  return out;
+}
 /* 盤面の文字（多重集合）を保ったまま並び替え、なぞれる単語が2つ以上ある並びを返す */
 function shuffledGrid(grid, rows) {
   const vals = [];
@@ -605,6 +623,7 @@ function startGame(mode) {
   $("nextBox").style.display = "";
   $("dropBtn").style.display = "";
   $("shakeBtn").style.display = "none";
+  $("board").classList.remove("tsumiField");
   G = { mode, grid: newGrid(), falling: null, queue: [pickMoraFreq(), pickMoraFreq()],
         score: 0, words: 0, moraCleared: 0, maxChain: 0, resolving: false, over: false,
         soft: false, targetCol: 3, lastWords: [], missions: mode === "mission" ? genMissions() : null,
@@ -794,6 +813,7 @@ function startTsumi() {
   $("timerVal").textContent = "⏱ 60";
   $("nextBox").style.display = "none";
   $("dropBtn").style.display = "none";
+  $("board").classList.add("tsumiField");
   $("shakeBtn").style.display = "";
   updateShakeBtn();
   $("missionBox").style.display = "none";
@@ -809,7 +829,8 @@ function renderTsumi() {
   for (let r = 0; r < TROWS; r++) for (let c = 0; c < COLS; c++) {
     const mo = T.grid[r][c];
     if (!mo) continue;
-    const d = blockEl(mo, r, c);
+    const d = blockEl(mo, r, c, "tsumiBlk");
+    d.style.fontSize = Math.round(CS * (mo.length > 1 ? 0.36 : 0.52)) + "px";
     d.dataset.r = r; d.dataset.c = c;
     b.appendChild(d); tsumiEls.push(d);
   }
@@ -840,8 +861,10 @@ function updateShakeBtn() {
   b.textContent = "ゆらす（あと" + T.shakes + "回）";
   b.style.opacity = T.shakes > 0 ? "1" : "0.45";
 }
-/* つながりが見つからないときの救済： 盤面を揺らして文字の並びだけを入れ替える */
-async function shakeField() {
+/* つながりが見つからないときの救済： 物理演算で盤面を揺らす。
+   各ブロックに初速と重さ（質量）を与え、重力・壁と床・ブロック同士の衝突を計算して跳ねさせ、
+   静止したら各セルへ最も近いブロックを割り当てて整列させる */
+function shakeField() {
   if (!T || T.over || T.resolving || T.shaking || T.shakes <= 0) return;
   T.shakes--;
   T.shaking = true;
@@ -850,12 +873,107 @@ async function shakeField() {
   updateTraceUI();
   updateShakeBtn();
   sfx("shake");
-  $("board").classList.add("shaking");
-  await sleep(460);
-  T.grid = shuffledGrid(T.grid, TROWS);
-  renderTsumi();
-  $("board").classList.remove("shaking");
+  const blocks = [];
+  tsumiEls.forEach(el => {
+    const r = +el.dataset.r, c = +el.dataset.c;
+    blocks.push({ el, mora: T.grid[r][c], x: c + 0.5, y: r + 0.5,
+                  vx: (Math.random() - 0.5) * 13, vy: -(6 + Math.random() * 6),
+                  m: 0.8 + Math.random() * 0.6, sleep: false, rest: 0 });
+  });
+  T.phys = { blocks, t: 0, still: 0 };
+}
+function stepPhys(dt) {
+  const P = T.phys;
+  if (!P) return;
+  P.t += dt;
+  const rad = (CS - 6) / (2 * CS), W = COLS, H = TROWS;
+  /* 終盤は重力を弱め＋減衰を強めて、詰まった盤面でも確実に静止へ収束させる */
+  const calm = P.t > 1.05;
+  const GRAV = 46 * (calm ? 0.22 : 1);
+  for (let s = 0; s < 2; s++) {
+    const h = dt / 2;
+    for (const b of P.blocks) {
+      if (b.sleep) continue;
+      b.vy += GRAV * h;
+      b.x += b.vx * h;
+      b.y += b.vy * h;
+      if (b.x < rad) { b.x = rad; b.vx = -b.vx * 0.5; }
+      if (b.x > W - rad) { b.x = W - rad; b.vx = -b.vx * 0.5; }
+      if (b.y < rad) { b.y = rad; b.vy = -b.vy * 0.5; }
+      if (b.y > H - rad) { b.y = H - rad; b.vy = b.vy > 5 ? -b.vy * 0.42 : 0; b.vx *= 0.84; }
+    }
+    /* 衝突解決は反復して、山積み状態でも速度が収束するようにする。
+       眠ったブロックは質量無限大の静止物として扱い、強い衝撃でのみ目覚める */
+    for (let it = 0; it < 3; it++) {
+      for (let i = 0; i < P.blocks.length; i++) for (let j = i + 1; j < P.blocks.length; j++) {
+        const a = P.blocks[i], b = P.blocks[j];
+        if (a.sleep && b.sleep) continue;
+        const dx = b.x - a.x, dy = b.y - a.y;
+        const d2 = dx * dx + dy * dy, min = 2 * rad;
+        if (d2 >= min * min || d2 === 0) continue;
+        const d = Math.sqrt(d2), nx = dx / d, ny = dy / d, overlap = min - d;
+        const vn0 = (b.vx - a.vx) * nx + (b.vy - a.vy) * ny;
+        if (vn0 < -3.5) { /* 強い衝撃で眠りから覚める */
+          if (a.sleep) { a.sleep = false; a.rest = 0; }
+          if (b.sleep) { b.sleep = false; b.rest = 0; }
+        }
+        const ima = a.sleep ? 0 : 1 / a.m, imb = b.sleep ? 0 : 1 / b.m;
+        const isim = ima + imb;
+        if (isim === 0) continue;
+        a.x -= nx * overlap * (ima / isim); a.y -= ny * overlap * (ima / isim);
+        b.x += nx * overlap * (imb / isim); b.y += ny * overlap * (imb / isim);
+        const vn = (b.vx - a.vx) * nx + (b.vy - a.vy) * ny;
+        if (vn < 0) {
+          const rest = vn < -0.8 ? 0.35 : 0;
+          const imp = -(1 + rest) * vn / isim;
+          a.vx -= imp * ima * nx; a.vy -= imp * ima * ny;
+          b.vx += imp * imb * nx; b.vy += imp * imb * ny;
+        }
+        /* 接触摩擦： 接線方向の相対速度を減衰させる（斜めの接触で宙吊りになるのを防ぐ） */
+        const tx = -ny, ty = nx;
+        const vt = (b.vx - a.vx) * tx + (b.vy - a.vy) * ty;
+        const jt = -vt * 0.3 / isim;
+        a.vx -= jt * ima * tx; a.vy -= jt * ima * ty;
+        b.vx += jt * imb * tx; b.vy += jt * imb * ty;
+      }
+    }
+  }
+  if (calm) {
+    const f = Math.pow(0.002, dt);
+    for (const b of P.blocks) if (!b.sleep) { b.vx *= f; b.vy *= f; }
+  }
+  /* 低速が続いたブロックから眠らせる（下から順に静止していく） */
+  let allSleep = true;
+  for (const b of P.blocks) {
+    if (!b.sleep) {
+      if (Math.hypot(b.vx, b.vy) < 0.5) {
+        b.rest += dt;
+        if (b.rest >= 0.22) { b.sleep = true; b.vx = 0; b.vy = 0; }
+      } else b.rest = 0;
+    }
+    if (!b.sleep) allSleep = false;
+    b.el.style.transform = "translate(" + ((b.x - rad) * CS) + "px," + ((b.y - rad) * CS) + "px)";
+  }
+  if (allSleep || P.t > 3.2) finishShake();
+}
+async function finishShake() {
+  const P = T.phys;
+  if (!P) return;
+  T.phys = null;
+  const assign = assignCells(P.blocks, TROWS, COLS);
+  for (const b of P.blocks) b.el.style.transition = "transform .28s ease";
+  for (const a of assign) {
+    const b = P.blocks[a.i];
+    b.el.style.transform = "translate(" + (a.c * CS + 3) + "px," + (a.r * CS + 3) + "px)";
+  }
+  await sleep(300);
+  if (!T) return;
+  const grid = Array.from({ length: TROWS }, () => Array(COLS).fill(null));
+  for (const a of assign) grid[a.r][a.c] = P.blocks[a.i].mora;
+  T.grid = grid;
+  if (countTraceable(T.grid, TROWS, 2) < 2) T.grid = shuffledGrid(T.grid, TROWS);
   T.shaking = false;
+  renderTsumi();
 }
 function flashTrace(text) {
   const b = $("traceBanner");
@@ -946,35 +1064,64 @@ function tsumiFinish() {
     "<br>つくった ことば " + T.words + "こ ／ れんさ さいだい " + T.maxChain + "れんさ";
   $("overOv").classList.add("active");
 }
-function cellFromEvent(e) {
+/* 近接判定： セルの中心から CONNECT_R（セル単位）以内に指が近づけば、そのブロックに繋がる。
+   円形ブロック同士の隙間（中心間1.0、対角の隙間中心まで0.71）より大きく取り、間が空いても繋がるようにする */
+const CONNECT_R = 0.72;
+function nearestCell(fx, fy) {
+  let best = null, bestD = CONNECT_R;
+  const c0 = Math.floor(fx), r0 = Math.floor(fy);
+  for (let r = r0 - 1; r <= r0 + 1; r++) for (let c = c0 - 1; c <= c0 + 1; c++) {
+    if (r < 0 || r >= TROWS || c < 0 || c >= COLS) continue;
+    const d = Math.hypot(fx - (c + 0.5), fy - (r + 0.5));
+    if (d < bestD) { bestD = d; best = [r, c]; }
+  }
+  return best;
+}
+function pointerUnits(e) {
   const rect = $("board").getBoundingClientRect();
   const scale = rect.width / (COLS * CS);
-  const c = Math.floor((e.clientX - rect.left) / scale / CS);
-  const r = Math.floor((e.clientY - rect.top) / scale / CS);
-  if (r < 0 || r >= TROWS || c < 0 || c >= COLS) return null;
-  return [r, c];
+  return { x: (e.clientX - rect.left) / scale / CS, y: (e.clientY - rect.top) / scale / CS };
+}
+let lastTraceP = null;
+function tryConnectAt(fx, fy) {
+  const cell = nearestCell(fx, fy);
+  if (!cell) return;
+  if (!T.path.length) { T.path = [cell]; updateTraceUI(); return; }
+  const last = T.path[T.path.length - 1];
+  if (cell[0] === last[0] && cell[1] === last[1]) return;
+  const prev = T.path[T.path.length - 2];
+  if (prev && cell[0] === prev[0] && cell[1] === prev[1]) { T.path.pop(); updateTraceUI(); return; }
+  if (Math.abs(cell[0] - last[0]) <= 1 && Math.abs(cell[1] - last[1]) <= 1 &&
+      !T.path.some(([r, c]) => r === cell[0] && c === cell[1])) {
+    T.path.push(cell);
+    updateTraceUI();
+  }
 }
 function tsumiPointer(e, phase) {
   if (!T || T.over || T.shaking) return;
   if (phase === "down") {
     if (T.resolving) return;
-    const cell = cellFromEvent(e);
-    if (cell) { T.path = [cell]; traceActive = true; updateTraceUI(); }
-  } else if (phase === "move" && traceActive && T.path.length) {
-    const cell = cellFromEvent(e);
-    if (!cell) return;
-    const last = T.path[T.path.length - 1];
-    if (cell[0] === last[0] && cell[1] === last[1]) return;
-    const prev = T.path[T.path.length - 2];
-    if (prev && cell[0] === prev[0] && cell[1] === prev[1]) { T.path.pop(); updateTraceUI(); return; }
-    if (Math.abs(cell[0] - last[0]) <= 1 && Math.abs(cell[1] - last[1]) <= 1 &&
-        !T.path.some(([r, c]) => r === cell[0] && c === cell[1])) {
-      T.path.push(cell);
-      updateTraceUI();
-    }
+    const p = pointerUnits(e);
+    lastTraceP = p;
+    T.path = [];
+    traceActive = true;
+    tryConnectAt(p.x, p.y);
+  } else if (phase === "move" && traceActive) {
+    const p = pointerUnits(e);
+    if (lastTraceP) {
+      /* 速くなぞっても途切れないよう、前回の位置から今回の位置までを細かく補間して判定する */
+      const dist = Math.hypot(p.x - lastTraceP.x, p.y - lastTraceP.y);
+      const steps = Math.max(1, Math.ceil(dist / 0.22));
+      for (let i = 1; i <= steps; i++) {
+        tryConnectAt(lastTraceP.x + (p.x - lastTraceP.x) * i / steps,
+                     lastTraceP.y + (p.y - lastTraceP.y) * i / steps);
+      }
+    } else tryConnectAt(p.x, p.y);
+    lastTraceP = p;
   } else if (phase === "up") {
     if (!traceActive) return;
     traceActive = false;
+    lastTraceP = null;
     const path = T.path;
     T.path = [];
     if (path.length >= 2 && !T.resolving && !T.over) {
@@ -999,6 +1146,7 @@ function loop(t) {
     if (sec !== T.lastShownSec) { T.lastShownSec = sec; $("timerVal").textContent = "⏱ " + sec; }
     if (T.left <= 0) tsumiFinish();
   }
+  if (T && T.phys) stepPhys(dt);
   if (G && G.falling && !G.resolving && !G.over) {
     const f = G.falling;
     trySlide();
