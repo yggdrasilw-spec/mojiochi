@@ -20,6 +20,8 @@ class El {
   appendChild(c) { this.children.push(c); c.parentNode = this; return c; }
   remove() { if (this.parentNode) { const i = this.parentNode.children.indexOf(this); if (i >= 0) this.parentNode.children.splice(i, 1); this.parentNode = null; } }
   addEventListener() {} removeEventListener() {}
+  setAttribute(k, v) { (this._attrs ||= {})[k] = String(v); }
+  getAttribute(k) { return this._attrs ? this._attrs[k] : null; }
   querySelector() { return new El(); }
   querySelectorAll(sel) {
     if (sel === ".cellbg") return this.children.filter(c => c._cls.has("cellbg"));
@@ -39,6 +41,7 @@ global.innerWidth = 1280; global.innerHeight = 720;
 global.document = {
   getElementById: getEl,
   createElement: t => new El(t),
+  createElementNS: (ns, t) => new El(t),
   querySelectorAll: sel => registry.byClass(sel),
   querySelector: () => new El(),
   addEventListener() {}
@@ -192,117 +195,73 @@ global.speechSynthesis = { cancel() {}, speak() {} };
       " wordsPerBlock=" + (wordsMade / Math.max(1, placed)).toFixed(3));
   }
 
-  /* ===== もじつみ： 縦横検出・なぞり探索・盤面生成 ===== */
+  /* ===== もじつみ（物理ベース）： フィールド・近接グラフ・単語保証 ===== */
+  const mkB = (mora, x, y) => ({ mora, x, y, vx: 0, vy: 0, m: 1, sleep: false, rest: 0, el: new El("div") });
   {
-    const tg = Array.from({ length: TROWS }, () => Array(COLS).fill(null));
-    // 横の単語（3モーラ）
-    tg[6][0] = "り"; tg[6][1] = "ん"; tg[6][2] = "ご";
-    // 縦の単語（3モーラ）
-    tg[0][7] = "す"; tg[1][7] = "い"; tg[2][7] = "か";
-    // 2モーラ語は自動消去（minLen=3）の対象外
-    tg[6][4] = "い"; tg[6][5] = "ぬ";
-    const hv = findWordsHV(tg, TROWS, 3);
-    const readings = hv.map(m => m.reading).sort();
-    ok(readings.includes("りんご"), "HV horizontal: " + readings.join(","));
-    ok(readings.includes("すいか"), "HV vertical: " + readings.join(","));
-    ok(!readings.includes("いぬ"), "HV ignores 2-mora at minLen 3");
-    const hv2 = findWordsHV(tg, TROWS, 2);
-    ok(hv2.map(m => m.reading).includes("いぬ"), "HV minLen 2 finds いぬ");
-    // なぞり探索： 斜め隣接でも単語を数えられる
-    const dg = Array.from({ length: TROWS }, () => Array(COLS).fill("あ"));
-    dg[0][0] = "り"; dg[1][1] = "ん"; dg[2][2] = "ご";
-    ok(countTraceable(dg, TROWS, 1) >= 1, "traceable diagonal ringo");
+    // 曲線フィールドの符号付き距離
+    ok(sdField(4, 3.75) < -TRAD, "sdField center is deep inside");
+    ok(sdField(4, 0.62) < 0, "sdField spawn point is inside");
+    ok(sdField(-1, 3) > 0, "sdField outside left");
+    ok(sdField(0.3, 7.2) > 0, "sdField bottom-left corner is cut by the curve");
+    ok(sdField(4, 7.0) < 0, "sdField bottom center is inside");
+    // 近接グラフの探索： 横一列の りんご を数えられる
+    const bodies = [mkB("り", 0.5, 3), mkB("ん", 1.45, 3), mkB("ご", 2.4, 3), mkB("あ", 6.5, 0.8), mkB("か", 7.2, 6.5)];
+    ok(countTraceableGraph(bodies, 1) === 1, "graph solver finds ringo");
+    // 離れた文字同士は繋がらない
+    const far = [mkB("り", 0.5, 0.5), mkB("ん", 4, 3.75), mkB("ご", 7.5, 7)];
+    ok(countTraceableGraph(far, 1) === 0, "graph solver: far apart is not traceable");
     // 接頭辞集合の健全性
     ok(PREFIX_SET.has("りん"), "prefix set has りん");
     ok(!PREFIX_SET.has("りんごはし"), "prefix set rejects non-prefix");
-    // 盤面生成の不変条件（3回）
-    for (let i = 0; i < 3; i++) {
-      const t0 = Date.now();
-      const board = genTsumiBoard();
-      const ms = Date.now() - t0;
-      ok(board.length === TROWS && board.every(row => row.every(v => v)), "tsumi board full " + i);
-      const pre = findWordsHV(board, TROWS, 3).length;
-      const tr = countTraceable(board, TROWS, 4);
-      ok(pre <= 2, "tsumi board pre-words " + pre + " (gen " + i + ")");
-      ok(tr >= 3, "tsumi board traceable " + tr + " (gen " + i + ")");
-      console.log("tsumi gen " + i + ": " + ms + "ms pre=" + pre + " traceable(cap4)=" + tr);
-    }
   }
-
-  /* ===== ゆらす（シャッフル）の検証 ===== */
+  /* ===== letterFix： 単語ゼロの盤面に単語を埋め込めること ===== */
   {
-    const src = genTsumiBoard();
-    const multiset = g => g.flat().filter(Boolean).sort().join(",");
-    const before = multiset(src);
-    let changed = 0;
-    for (let i = 0; i < 5; i++) {
-      const sh = shuffledGrid(src, TROWS);
-      ok(multiset(sh) === before, "shuffle preserves multiset " + i);
-      ok(countTraceable(sh, TROWS, 2) >= 2, "shuffle keeps >=2 traceable " + i);
-      if (sh.flat().join() !== src.flat().join()) changed++;
-    }
-    ok(changed >= 4, "shuffle actually rearranges (" + changed + "/5)");
+    const bodies = [];
+    for (let r = 0; r < 3; r++) for (let c = 0; c < 4; c++) bodies.push(mkB("ん", 1 + c * 1.0, 2 + r * 1.0));
+    ok(countTraceableGraph(bodies, 2) === 0, "letterFix precondition: no words");
+    letterFix(bodies);
+    const n = countTraceableGraph(bodies, 2);
+    ok(n >= 2, "letterFix embeds >=2 traceable words (got " + n + ")");
   }
-
-  /* ===== 近接判定（円形ブロックの隙間を繋ぐ） ===== */
+  /* ===== なぞり（tryConnectBody）： 接続・斜め・引き返し ===== */
   {
-    const eq = (a, b) => JSON.stringify(a) === JSON.stringify(b);
-    ok(eq(nearestCell(0.5, 0.5), [0, 0]), "nearestCell center");
-    const mid = nearestCell(1.0, 0.5);
-    ok(mid && (eq(mid, [0, 0]) || eq(mid, [0, 1])), "nearestCell gap midpoint connects: " + JSON.stringify(mid));
-    const diag = nearestCell(1.0, 1.0);
-    ok(diag && diag[0] <= 1 && diag[1] <= 1, "nearestCell diagonal gap connects: " + JSON.stringify(diag));
-    ok(nearestCell(0.5, -0.4) === null, "nearestCell far outside is null");
-    ok(nearestCell(-1.5, 3.0) === null, "nearestCell off-board is null");
+    T = { bodies: [mkB("り", 0.5, 3), mkB("ん", 1.45, 3), mkB("ご", 2.4, 3), mkB("す", 3.35, 3.9)],
+          path: [], score: 0, words: 0, maxChain: 0, left: 60, over: false, settled: true,
+          started: true, lastWords: [], lastShownSec: 99, shakes: 3, spawnQueue: [], spawnT: 0, simT: 0 };
+    tryConnectBody(0.5, 3);
+    ok(T.path.length === 1 && T.path[0].mora === "り", "trace starts at nearest body");
+    tryConnectBody(1.45, 3);
+    tryConnectBody(2.4, 3);
+    ok(T.path.map(b => b.mora).join("") === "りんご", "trace builds ringo");
+    tryConnectBody(3.35, 3.9);
+    ok(T.path.length === 4, "trace extends diagonally-adjacent");
+    tryConnectBody(2.4, 3);
+    ok(T.path.length === 3, "trace backtracks");
+    tryConnectBody(6.5, 0.8);
+    ok(T.path.length === 3, "trace ignores far bodies");
+    T = null;
   }
-  /* ===== 物理後の整列（assignCells） ===== */
+  /* ===== フルシミュレーション： ぱらぱら落ちて静止し、単語が保証される ===== */
   {
-    // 正確な中心位置にあるブロックは、元のセルへ正確に戻る
-    const blocks = [];
-    for (let r = 0; r < TROWS; r++) for (let c = 0; c < COLS; c++)
-      blocks.push({ x: c + 0.5, y: r + 0.5, mora: r + ":" + c });
-    // 順序をシャッフルして渡しても割り当ては一対一
-    const shuffledIn = [...blocks].sort(() => Math.random() - 0.5);
-    const assign = assignCells(shuffledIn, TROWS, COLS);
-    ok(assign.length === TROWS * COLS, "assign covers all cells");
-    ok(new Set(assign.map(a => a.i)).size === assign.length, "assign is one-to-one");
-    let exact = 0;
-    for (const a of assign) if (shuffledIn[a.i].mora === a.r + ":" + a.c) exact++;
-    ok(exact === assign.length, "assign returns blocks to home cells (" + exact + "/" + assign.length + ")");
-    // 少し揺れた位置でも、各ブロックは近いセルに収まる
-    const jittered = blocks.map(b => ({ x: b.x + (Math.random() - 0.5) * 0.5, y: b.y + (Math.random() - 0.5) * 0.5, mora: b.mora }));
-    const assign2 = assignCells(jittered, TROWS, COLS);
-    let far = 0;
-    for (const a of assign2) {
-      const [hr, hc] = jittered[a.i].mora.split(":").map(Number);
-      if (Math.abs(hr - a.r) > 1 || Math.abs(hc - a.c) > 1) far++;
-    }
-    ok(far === 0, "assign keeps jittered blocks local (far=" + far + ")");
-  }
-
-  /* ===== ゆらす物理演算のシミュレーション ===== */
-  {
-    T = { grid: genTsumiBoard(), path: [], score: 0, words: 0, maxChain: 0, left: 60,
-          over: false, resolving: false, lastWords: [], lastShownSec: 99, shakes: 3, shaking: false };
-    renderTsumi();
-    const msBefore = T.grid.flat().sort().join(",");
+    startTsumi();
+    let frames = 0;
+    while (T && !T.settled && frames < 1200) { stepTsumi(1 / 60); frames++; }
+    ok(T.settled, "tsumi settles (" + frames + " frames)");
+    ok(T.bodies.length === TBODIES, "all bodies spawned: " + T.bodies.length);
+    let outside = 0;
+    for (const b of T.bodies) if (sdField(b.x, b.y) > -TRAD + 0.08) outside++;
+    ok(outside === 0, "all bodies rest inside the curved field (" + outside + ")");
+    ok(countTraceableGraph(T.bodies, 2) >= 2, "settled board guarantees traceable words");
+    ok(T.started, "timer starts after settle");
+    console.log("tsumi sim: settled in " + (frames / 60).toFixed(2) + "s");
+    // ゆらす： 投げ上げて再静止すること
     shakeField();
-    ok(T.phys && T.phys.blocks.length === TROWS * COLS, "phys blocks created");
-    let iter = 0, outOfBounds = 0;
-    while (T.phys && iter < 600) {
-      stepPhys(1 / 60);
-      iter++;
-      if (T.phys) for (const b of T.phys.blocks) {
-        if (b.x < -0.6 || b.x > COLS + 0.6 || b.y < -0.6 || b.y > TROWS + 0.6) outOfBounds++;
-      }
-    }
-    ok(!T.phys, "phys settled in " + iter + " frames");
-    ok(outOfBounds === 0, "phys stayed in bounds (" + outOfBounds + ")");
-    await new Promise(r => setTimeout(r, 450));
-    ok(T.shaking === false, "shake finished");
-    ok(T.grid.every(row => row.every(v => v)), "grid full after shake");
-    ok(T.grid.flat().sort().join(",") === msBefore, "multiset preserved after phys shake");
-    console.log("phys shake: settled in " + (iter / 60).toFixed(2) + "s, traceable=" + countTraceable(T.grid, TROWS, 4));
+    ok(!T.settled && T.shakes === PARAMS.shakes - 1, "shake consumes one use and un-settles");
+    frames = 0;
+    while (T && !T.settled && frames < 1200) { stepTsumi(1 / 60); frames++; }
+    ok(T.settled, "board re-settles after shake (" + frames + " frames)");
+    ok(countTraceableGraph(T.bodies, 2) >= 2, "words guaranteed after shake");
+    console.log("tsumi shake sim: re-settled in " + (frames / 60).toFixed(2) + "s");
     T = null;
   }
 

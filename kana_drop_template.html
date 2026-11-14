@@ -53,10 +53,15 @@
   .blk.inpath.ok { outline-color:#8ac926; }
   #traceBanner { position:absolute; left:50%; top:78px; transform:translateX(-50%); z-index:65; background:rgba(255,255,255,.95); border-radius:999px; padding:6px 30px; font-size:36px; font-weight:900; color:#26355d; letter-spacing:.14em; box-shadow:0 5px 0 rgba(38,53,93,.15); display:none; }
   #traceBanner.ok { color:#4d8f1f; }
-  /* もじつみ： 円形ブロックと丸いフィールド（ツムツム風） */
+  /* もじつみ： 円形ブロックと曲線フィールド（ツムツム風） */
   .blk.tsumiBlk { border-radius:50%; box-shadow:inset 0 -6px 0 rgba(38,53,93,.16), inset 3px 4px 0 rgba(255,255,255,.5), 0 3px 0 rgba(38,53,93,.18); }
-  #board.tsumiField { border-radius:30px; background:rgba(255,255,255,.42); }
+  #board.tsumiField { background:transparent; box-shadow:none; }
   #board.tsumiField .cellbg { display:none; }
+  #board.tsumiField #ghost { display:none; }
+  .fieldShape { position:absolute; inset:0; width:100%; height:100%; z-index:0; pointer-events:none; }
+  .fieldShape rect { fill:rgba(255,255,255,.55); stroke:#8ecae6; stroke-width:.09; }
+  #traceSvg { position:absolute; inset:0; width:100%; height:100%; z-index:5; pointer-events:none; }
+  #traceLine { fill:none; stroke:#ff8fab; stroke-width:.16; stroke-linecap:round; stroke-linejoin:round; opacity:.85; }
   #ghost { position:absolute; border-radius:12px; border:3px dashed rgba(38,53,93,.35); pointer-events:none; }
   #panel { width:330px; display:flex; flex-direction:column; gap:13px; }
   .pbox { background:rgba(255,255,255,.88); border-radius:18px; padding:12px 18px; box-shadow:0 5px 0 rgba(38,53,93,.1); }
@@ -355,18 +360,44 @@ const COLS = PARAMS.cols, ROWS = PARAMS.rows;
 let BOARD_ROWS = ROWS;
 function layoutBoard() {
   const b = $("board");
-  b.style.width = COLS * CS + "px"; b.style.height = BOARD_ROWS * CS + "px";
+  const tsumi = typeof T !== "undefined" && T && curMode === "tsumi";
+  b.style.width = COLS * CS + "px"; b.style.height = (tsumi ? TH : BOARD_ROWS) * CS + "px";
   b.querySelectorAll(".cellbg").forEach(d => d.remove());
-  for (let r = 0; r < BOARD_ROWS; r++) for (let c = 0; c < COLS; c++) {
-    const d = document.createElement("div");
-    d.className = "cellbg";
-    d.style.left = (c * CS + 3) + "px"; d.style.top = (r * CS + 3) + "px";
-    d.style.width = (CS - 6) + "px"; d.style.height = (CS - 6) + "px";
-    b.appendChild(d);
+  if (fieldShapeEl) { fieldShapeEl.remove(); fieldShapeEl = null; }
+  if (traceSvgEl) { traceSvgEl.remove(); traceSvgEl = null; traceLineEl = null; }
+  if (tsumi) {
+    const ns = "http://www.w3.org/2000/svg";
+    const svg = document.createElementNS(ns, "svg");
+    svg.setAttribute("class", "fieldShape");
+    svg.setAttribute("viewBox", "0 0 " + TW + " " + TH);
+    svg.setAttribute("preserveAspectRatio", "none");
+    const rect = document.createElementNS(ns, "rect");
+    rect.setAttribute("x", 0.07); rect.setAttribute("y", 0.07);
+    rect.setAttribute("width", TW - 0.14); rect.setAttribute("height", TH - 0.14);
+    rect.setAttribute("rx", TFIELD_R); rect.setAttribute("ry", TFIELD_R);
+    svg.appendChild(rect);
+    b.appendChild(svg); fieldShapeEl = svg;
+    const tsvg = document.createElementNS(ns, "svg");
+    tsvg.setAttribute("id", "traceSvg");
+    tsvg.setAttribute("viewBox", "0 0 " + TW + " " + TH);
+    tsvg.setAttribute("preserveAspectRatio", "none");
+    const pl = document.createElementNS(ns, "polyline");
+    pl.setAttribute("id", "traceLine");
+    tsvg.appendChild(pl);
+    b.appendChild(tsvg); traceSvgEl = tsvg; traceLineEl = pl;
+    for (const bd of T.bodies) { sizeBodyEl(bd); b.appendChild(bd.el); placeBodyEl(bd); }
+    drawTraceLine();
+  } else {
+    for (let r = 0; r < BOARD_ROWS; r++) for (let c = 0; c < COLS; c++) {
+      const d = document.createElement("div");
+      d.className = "cellbg";
+      d.style.left = (c * CS + 3) + "px"; d.style.top = (r * CS + 3) + "px";
+      d.style.width = (CS - 6) + "px"; d.style.height = (CS - 6) + "px";
+      b.appendChild(d);
+    }
   }
   if (!document.getElementById("ghost")) { const g = document.createElement("div"); g.id = "ghost"; b.appendChild(g); }
   if (typeof G !== "undefined" && G) { renderSettled(); positionFalling(); }
-  if (typeof T !== "undefined" && T) renderTsumi();
 }
 function blockEl(mora, r, c, extra) {
   const d = document.createElement("div");
@@ -490,125 +521,94 @@ function pickMora(grid) {
 }
 
 /* ===== もじつみ用ロジック（テスト対象） ===== */
-const TROWS = 7;
-function scanLine(units, minLen) {
-  const out = [], n = units.length;
-  for (let i = 0; i < n; i++) {
-    let s = "";
-    for (let L = 1; L <= 7 && i + L <= n; L++) {
-      s += units[i + L - 1];
-      if (L >= minLen && WORDSET.has(s)) out.push({ start: i, len: L, reading: s });
-    }
-  }
-  return out;
+/* ===== もじつみ（物理ベース） =====
+   ブロックは円形の物理ボディ。曲線フィールド（角丸の器）の中を、低重力と弾性でぱらぱら落ちて積もる。
+   繋がりはグリッドではなく「近いブロック同士」の近接グラフで判定する。自動連鎖はしない */
+const TW = 8;            // フィールド幅（単位）
+const TH = 7.5;          // フィールド高さ（単位）
+const TRAD = 0.46;       // ブロック半径（単位）
+const TFIELD_R = 2.2;    // フィールドの角の丸み（単位）＝思い切った曲線
+const TBODIES = 56;      // ブロック数
+const ADJ_D = TRAD * 2 * 1.5;  // これより近ければ「つながっている」とみなす中心間距離
+const CONNECT_D = 0.95;  // 指がこの距離まで近づけばブロックを掴む
+/* 角丸矩形の符号付き距離（内側が負）。フィールド境界との衝突に使う */
+function sdField(x, y) {
+  const qx = Math.abs(x - TW / 2) - (TW / 2 - TFIELD_R);
+  const qy = Math.abs(y - TH / 2) - (TH / 2 - TFIELD_R);
+  const ax = Math.max(qx, 0), ay = Math.max(qy, 0);
+  return Math.hypot(ax, ay) + Math.min(Math.max(qx, qy), 0) - TFIELD_R;
 }
-/* 縦・横の直線にできた単語（minLen以上）を重ならないよう最長優先で拾う */
-function findWordsHV(grid, rows, minLen) {
-  const all = [];
-  for (let r = 0; r < rows; r++) {
-    for (const seg of segmentsInRow(grid, r)) {
-      for (const m of scanLine(seg.units, minLen)) {
-        all.push({ reading: m.reading, len: m.len, cells: Array.from({ length: m.len }, (_, k) => [r, seg.start + m.start + k]) });
-      }
-    }
+function buildAdj(bodies) {
+  const adj = bodies.map(() => []);
+  for (let i = 0; i < bodies.length; i++) for (let j = i + 1; j < bodies.length; j++) {
+    const a = bodies[i], b = bodies[j];
+    if (Math.hypot(a.x - b.x, a.y - b.y) <= ADJ_D) { adj[i].push(j); adj[j].push(i); }
   }
-  for (let c = 0; c < COLS; c++) {
-    let cur = null; const segs = [];
-    for (let r = 0; r < rows; r++) {
-      if (grid[r][c]) { if (!cur) cur = { start: r, units: [] }; cur.units.push(grid[r][c]); }
-      else if (cur) { segs.push(cur); cur = null; }
-    }
-    if (cur) segs.push(cur);
-    for (const seg of segs) {
-      for (const m of scanLine(seg.units, minLen)) {
-        all.push({ reading: m.reading, len: m.len, cells: Array.from({ length: m.len }, (_, k) => [seg.start + m.start + k, c]) });
-      }
-    }
-  }
-  all.sort((a, b) => b.len - a.len);
-  const used = new Set(), picked = [];
-  for (const m of all) {
-    if (m.cells.some(([r, c]) => used.has(r + ":" + c))) continue;
-    m.cells.forEach(([r, c]) => used.add(r + ":" + c));
-    picked.push(m);
-  }
-  return picked;
+  return adj;
 }
-/* 8方向なぞりで作れる単語の数（重複読みは1つに数える、cap で打ち切り） */
-function countTraceable(grid, rows, cap) {
+/* 近接グラフ上でなぞって作れる単語の数（重複読みは1つ、capで打ち切り） */
+function countTraceableGraph(bodies, cap) {
+  const adj = buildAdj(bodies);
   const found = new Set();
-  const budget = { n: 400000 };
-  const DIRS = [[-1, -1], [-1, 0], [-1, 1], [0, -1], [0, 1], [1, -1], [1, 0], [1, 1]];
-  function dfs(r, c, str, moraN, used) {
+  const budget = { n: 300000 };
+  function dfs(i, str, depth, used) {
     if (found.size >= cap || budget.n <= 0) return;
     budget.n--;
-    if (moraN >= 2 && WORDSET.has(str)) found.add(str);
-    if (moraN >= 7) return;
-    for (const [dr, dc] of DIRS) {
-      const nr = r + dr, nc = c + dc;
-      if (nr < 0 || nr >= rows || nc < 0 || nc >= COLS) continue;
-      const key = nr + ":" + nc;
-      if (used.has(key) || !grid[nr][nc]) continue;
-      const nstr = str + grid[nr][nc];
-      if (!PREFIX_SET.has(nstr)) continue;
-      used.add(key);
-      dfs(nr, nc, nstr, moraN + 1, used);
-      used.delete(key);
+    if (depth >= 2 && WORDSET.has(str)) found.add(str);
+    if (depth >= 7) return;
+    for (const j of adj[i]) {
+      if (used.has(j)) continue;
+      const ns = str + bodies[j].mora;
+      if (!PREFIX_SET.has(ns)) continue;
+      used.add(j);
+      dfs(j, ns, depth + 1, used);
+      used.delete(j);
       if (found.size >= cap || budget.n <= 0) return;
     }
   }
-  for (let r = 0; r < rows; r++) for (let c = 0; c < COLS; c++) {
-    if (grid[r][c]) dfs(r, c, grid[r][c], 1, new Set([r + ":" + c]));
+  for (let i = 0; i < bodies.length; i++) {
+    dfs(i, bodies[i].mora, 1, new Set([i]));
     if (found.size >= cap) return found.size;
   }
   return found.size;
 }
-/* 物理演算のあと、各セルへ最も近いブロックを割り当てる（全セルちょうど1つずつ） */
-function assignCells(blocks, rows, cols) {
-  const remaining = blocks.map((b, i) => ({ i, x: b.x, y: b.y }));
-  const out = [];
-  for (let r = 0; r < rows; r++) for (let c = 0; c < cols; c++) {
-    const cx = c + 0.5, cy = r + 0.5;
-    let bi = 0, bd = Infinity;
-    remaining.forEach((b, k) => {
-      const d = (b.x - cx) * (b.x - cx) + (b.y - cy) * (b.y - cy);
-      if (d < bd) { bd = d; bi = k; }
-    });
-    const picked = remaining.splice(bi, 1)[0];
-    out.push({ r, c, i: picked.i });
-  }
-  return out;
+let BYLEN = null;
+function wordsByLen() {
+  if (BYLEN) return BYLEN;
+  BYLEN = { 2: [], 3: [], 4: [], 5: [] };
+  for (const [r, info] of WORD_INFO) { const n = info.units.length; if (BYLEN[n]) BYLEN[n].push(r); }
+  return BYLEN;
 }
-/* 盤面の文字（多重集合）を保ったまま並び替え、なぞれる単語が2つ以上ある並びを返す */
-function shuffledGrid(grid, rows) {
-  const vals = [];
-  for (let r = 0; r < rows; r++) for (let c = 0; c < COLS; c++) if (grid[r][c]) vals.push(grid[r][c]);
-  let best = null, bestTr = -1;
-  for (let attempt = 0; attempt < 12; attempt++) {
-    const a = [...vals];
-    for (let i = a.length - 1; i > 0; i--) {
-      const j = Math.floor(Math.random() * (i + 1));
-      const t = a[i]; a[i] = a[j]; a[j] = t;
+/* 近接グラフ上のランダムな単純路（長さLモーラ）を探す */
+function findPathOfLen(adj, L) {
+  for (let s = 0; s < adj.length; s++) {
+    const start = Math.floor(Math.random() * adj.length);
+    const path = [start], used = new Set([start]);
+    let cur = start;
+    while (path.length < L) {
+      const cand = adj[cur].filter(j => !used.has(j));
+      if (!cand.length) break;
+      cur = cand[Math.floor(Math.random() * cand.length)];
+      path.push(cur); used.add(cur);
     }
-    const g = Array.from({ length: rows }, (_, r) => a.slice(r * COLS, (r + 1) * COLS));
-    const tr = countTraceable(g, rows, 2);
-    if (tr > bestTr) { bestTr = tr; best = g; }
-    if (tr >= 2) return g;
+    if (path.length === L) return path;
   }
-  return best;
+  return null;
 }
-/* 初期盤面： 列にできている単語は少なめ（自動で溶けない）、でもなぞれる単語は必ずある */
-function genTsumiBoard() {
-  let best = null, bestScore = -1e9;
-  for (let attempt = 0; attempt < 40; attempt++) {
-    const grid = Array.from({ length: TROWS }, () => Array.from({ length: COLS }, () => pickMoraFreq()));
-    const pre = findWordsHV(grid, TROWS, 3).length;
-    const tr = countTraceable(grid, TROWS, 4);
-    const score = tr * 10 - pre * 3;
-    if (score > bestScore) { bestScore = score; best = grid; }
-    if (pre <= 2 && tr >= 3) return grid;
+/* なぞれる単語が2つ未満なら、近くのブロックの文字を差し替えて単語を埋め込む */
+function letterFix(bodies) {
+  let guard = 0;
+  while (countTraceableGraph(bodies, 2) < 2 && guard < 3) {
+    guard++;
+    const adj = buildAdj(bodies);
+    const L = Math.random() < 0.5 ? 3 : 4;
+    const path = findPathOfLen(adj, L);
+    if (!path) break;
+    const pool = wordsByLen()[L];
+    const w = pool[Math.floor(Math.random() * pool.length)];
+    const units = WORD_INFO.get(w).units;
+    path.forEach((bi, k) => setBodyMora(bodies[bi], units[k]));
   }
-  return best;
 }
 
 /* ===== ゲーム進行 ===== */
@@ -800,13 +800,40 @@ function missionProgress(ms, m, chain) {
 }
 
 /* ===== もじつみ（第2モード） ===== */
-let T = null, curMode = "endless", traceActive = false, tsumiEls = [];
+let T = null, curMode = "endless", traceActive = false;
+let traceSvgEl = null, traceLineEl = null, fieldShapeEl = null;
+function sizeBodyEl(b) {
+  const dia = Math.round(TRAD * 2 * CS);
+  b.el.style.width = dia + "px"; b.el.style.height = dia + "px";
+  b.el.style.fontSize = Math.round(dia * (b.mora.length > 1 ? 0.38 : 0.56)) + "px";
+}
+function placeBodyEl(b) {
+  const dia = TRAD * 2 * CS;
+  b.el.style.transform = "translate(" + (b.x * CS - dia / 2) + "px," + (b.y * CS - dia / 2) + "px)";
+}
+function setBodyMora(b, mora) {
+  b.mora = mora;
+  b.el.textContent = mora;
+  b.el.style.background = colorOfMora(mora);
+  sizeBodyEl(b);
+}
+function makeBody(mora, x, y) {
+  const el = document.createElement("div");
+  el.className = "blk tsumiBlk";
+  el.style.zIndex = 3;
+  const b = { mora, x, y, vx: 0, vy: 0, m: 0.8 + Math.random() * 0.6, sleep: false, rest: 0, el };
+  setBodyMora(b, mora);
+  placeBodyEl(b);
+  $("board").appendChild(el);
+  return b;
+}
 function startTsumi() {
   curMode = "tsumi";
   G = null;
-  T = { grid: genTsumiBoard(), path: [], score: 0, words: 0, maxChain: 0, left: 60,
-        over: false, resolving: false, lastWords: [], lastShownSec: 99, shakes: PARAMS.shakes, shaking: false };
-  BOARD_ROWS = TROWS;
+  document.querySelectorAll("#board .blk").forEach(e => e.remove());
+  T = { bodies: [], path: [], score: 0, words: 0, maxChain: 0, left: 60,
+        over: false, settled: false, started: false, lastWords: [], lastShownSec: 99,
+        shakes: PARAMS.shakes, spawnQueue: [], spawnT: 0, simT: 0 };
   $("gameTitle").textContent = "もじつみ";
   $("gameMode").textContent = "🧩 もじを なぞって ことばを つくろう";
   $("timerVal").style.display = "";
@@ -819,41 +846,36 @@ function startTsumi() {
   $("missionBox").style.display = "none";
   showScreen("game");
   layoutBoard();
-  renderTsumi();
+  /* 最初の文字： 頻度で56個用意し、上からぱらぱら落とす（単語の保証は静止後に letterFix で行う） */
+  const letters = [];
+  while (letters.length < TBODIES) letters.push(pickMoraFreq());
+  T.spawnQueue = letters.map(mo => ({ mora: mo, x: 2.1 + Math.random() * 3.8 }));
   updateTsumiPanel();
 }
-function renderTsumi() {
-  const b = $("board");
-  tsumiEls.forEach(e => e.remove()); tsumiEls = [];
-  if (!T) return;
-  for (let r = 0; r < TROWS; r++) for (let c = 0; c < COLS; c++) {
-    const mo = T.grid[r][c];
-    if (!mo) continue;
-    const d = blockEl(mo, r, c, "tsumiBlk");
-    d.style.fontSize = Math.round(CS * (mo.length > 1 ? 0.36 : 0.52)) + "px";
-    d.dataset.r = r; d.dataset.c = c;
-    b.appendChild(d); tsumiEls.push(d);
-  }
-  updateTraceUI();
+function updateTsumiPanel() {
+  $("scoreVal").textContent = T.score;
+  $("statLine").textContent = "ことば " + T.words + "こ";
+  $("lastWords").innerHTML = T.lastWords.length
+    ? T.lastWords.map(l => '<div class="lw"><b>' + l.w + "</b>（" + l.reading + "） +" + l.gain + "<br>" + l.m + "</div>").join("")
+    : '<div class="lw">まだ ないよ</div>';
+}
+function drawTraceLine() {
+  if (!traceLineEl) return;
+  if (!T || !T.path.length) { traceLineEl.setAttribute("points", ""); return; }
+  traceLineEl.setAttribute("points", T.path.map(b => b.x + "," + b.y).join(" "));
 }
 function updateTraceUI() {
   const banner = $("traceBanner");
-  if (!T || !T.path.length) {
-    banner.style.display = "none";
-    tsumiEls.forEach(el => el.classList.remove("inpath", "ok"));
-    return;
-  }
-  const str = T.path.map(([r, c]) => T.grid[r][c]).join("");
+  if (!T) return;
+  for (const b of T.bodies) b.el.classList.remove("inpath", "ok");
+  if (!T.path.length) { banner.style.display = "none"; drawTraceLine(); return; }
+  const str = T.path.map(b => b.mora).join("");
   const isWord = T.path.length >= 2 && WORDSET.has(str);
   banner.textContent = str + (isWord ? " ✓ ことば！" : "");
   banner.classList.toggle("ok", isWord);
   banner.style.display = "block";
-  const keys = new Set(T.path.map(([r, c]) => r + ":" + c));
-  tsumiEls.forEach(el => {
-    const on = keys.has(el.dataset.r + ":" + el.dataset.c);
-    el.classList.toggle("inpath", on);
-    el.classList.toggle("ok", on && isWord);
-  });
+  for (const b of T.path) { b.el.classList.add("inpath"); if (isWord) b.el.classList.add("ok"); }
+  drawTraceLine();
 }
 function updateShakeBtn() {
   const b = $("shakeBtn");
@@ -861,59 +883,78 @@ function updateShakeBtn() {
   b.textContent = "ゆらす（あと" + T.shakes + "回）";
   b.style.opacity = T.shakes > 0 ? "1" : "0.45";
 }
-/* つながりが見つからないときの救済： 物理演算で盤面を揺らす。
-   各ブロックに初速と重さ（質量）を与え、重力・壁と床・ブロック同士の衝突を計算して跳ねさせ、
-   静止したら各セルへ最も近いブロックを割り当てて整列させる */
+/* つながりが見つからないときの救済： 全ブロックに初速を与えて物理で跳ねさせる */
 function shakeField() {
-  if (!T || T.over || T.resolving || T.shaking || T.shakes <= 0) return;
+  if (!T || T.over || !T.settled || T.shakes <= 0) return;
   T.shakes--;
-  T.shaking = true;
   T.path = [];
   traceActive = false;
   updateTraceUI();
   updateShakeBtn();
   sfx("shake");
-  const blocks = [];
-  tsumiEls.forEach(el => {
-    const r = +el.dataset.r, c = +el.dataset.c;
-    blocks.push({ el, mora: T.grid[r][c], x: c + 0.5, y: r + 0.5,
-                  vx: (Math.random() - 0.5) * 13, vy: -(6 + Math.random() * 6),
-                  m: 0.8 + Math.random() * 0.6, sleep: false, rest: 0 });
-  });
-  T.phys = { blocks, t: 0, still: 0 };
+  for (const b of T.bodies) {
+    b.sleep = false; b.rest = 0;
+    b.vx = (Math.random() - 0.5) * 9;
+    b.vy = -(3.5 + Math.random() * 4.5);
+  }
+  T.settled = false; T.simT = 0;
 }
-function stepPhys(dt) {
-  const P = T.phys;
-  if (!P) return;
-  P.t += dt;
-  const rad = (CS - 6) / (2 * CS), W = COLS, H = TROWS;
-  /* 終盤は重力を弱め＋減衰を強めて、詰まった盤面でも確実に静止へ収束させる */
-  const calm = P.t > 1.05;
-  const GRAV = 46 * (calm ? 0.22 : 1);
+/* 曲線フィールド境界との衝突（符号付き距離の勾配方向へ押し戻し、法線速度を弾性で反射） */
+function collideField(b) {
+  const sd = sdField(b.x, b.y);
+  const limit = -TRAD;
+  if (sd <= limit) return;
+  const e = 0.02;
+  let gx = sdField(b.x + e, b.y) - sdField(b.x - e, b.y);
+  let gy = sdField(b.x, b.y + e) - sdField(b.x, b.y - e);
+  const gl = Math.hypot(gx, gy) || 1;
+  gx /= gl; gy /= gl;
+  const pen = sd - limit;
+  b.x -= gx * pen; b.y -= gy * pen;
+  const vn = b.vx * gx + b.vy * gy;
+  if (vn > 0) {
+    const rest = vn > 1.1 ? 0.55 : 0;
+    b.vx -= (1 + rest) * vn * gx;
+    b.vy -= (1 + rest) * vn * gy;
+    b.vx *= 0.92; b.vy *= 0.92;
+  }
+}
+/* 物理シミュレーション： 低重力＋弾性。ぱらぱら落下、跳ね、積もり、静止までを担う */
+function stepTsumi(dt) {
+  if (!T || T.over) return;
+  if (T.spawnQueue.length) {
+    T.spawnT -= dt;
+    if (T.spawnT <= 0) {
+      T.spawnT = T.bodies.length < 10 ? 0.032 : 0.06;
+      const s = T.spawnQueue.shift();
+      const b = makeBody(s.mora, s.x, 0.62);
+      b.vy = 0.5;
+      T.bodies.push(b);
+    }
+  }
+  if (T.settled) return;
+  T.simT += dt;
+  const calm = T.simT > 0.9;
+  const GRAV = 15 * (calm ? 0.25 : 1);
   for (let s = 0; s < 2; s++) {
     const h = dt / 2;
-    for (const b of P.blocks) {
+    for (const b of T.bodies) {
       if (b.sleep) continue;
       b.vy += GRAV * h;
       b.x += b.vx * h;
       b.y += b.vy * h;
-      if (b.x < rad) { b.x = rad; b.vx = -b.vx * 0.5; }
-      if (b.x > W - rad) { b.x = W - rad; b.vx = -b.vx * 0.5; }
-      if (b.y < rad) { b.y = rad; b.vy = -b.vy * 0.5; }
-      if (b.y > H - rad) { b.y = H - rad; b.vy = b.vy > 5 ? -b.vy * 0.42 : 0; b.vx *= 0.84; }
+      collideField(b);
     }
-    /* 衝突解決は反復して、山積み状態でも速度が収束するようにする。
-       眠ったブロックは質量無限大の静止物として扱い、強い衝撃でのみ目覚める */
     for (let it = 0; it < 3; it++) {
-      for (let i = 0; i < P.blocks.length; i++) for (let j = i + 1; j < P.blocks.length; j++) {
-        const a = P.blocks[i], b = P.blocks[j];
+      for (let i = 0; i < T.bodies.length; i++) for (let j = i + 1; j < T.bodies.length; j++) {
+        const a = T.bodies[i], b = T.bodies[j];
         if (a.sleep && b.sleep) continue;
         const dx = b.x - a.x, dy = b.y - a.y;
-        const d2 = dx * dx + dy * dy, min = 2 * rad;
+        const d2 = dx * dx + dy * dy, min = 2 * TRAD;
         if (d2 >= min * min || d2 === 0) continue;
         const d = Math.sqrt(d2), nx = dx / d, ny = dy / d, overlap = min - d;
         const vn0 = (b.vx - a.vx) * nx + (b.vy - a.vy) * ny;
-        if (vn0 < -3.5) { /* 強い衝撃で眠りから覚める */
+        if (vn0 < -8.5) {
           if (a.sleep) { a.sleep = false; a.rest = 0; }
           if (b.sleep) { b.sleep = false; b.rest = 0; }
         }
@@ -924,132 +965,68 @@ function stepPhys(dt) {
         b.x += nx * overlap * (imb / isim); b.y += ny * overlap * (imb / isim);
         const vn = (b.vx - a.vx) * nx + (b.vy - a.vy) * ny;
         if (vn < 0) {
-          const rest = vn < -0.8 ? 0.35 : 0;
+          const rest = vn < -1.1 ? 0.55 : 0;
           const imp = -(1 + rest) * vn / isim;
           a.vx -= imp * ima * nx; a.vy -= imp * ima * ny;
           b.vx += imp * imb * nx; b.vy += imp * imb * ny;
         }
-        /* 接触摩擦： 接線方向の相対速度を減衰させる（斜めの接触で宙吊りになるのを防ぐ） */
         const tx = -ny, ty = nx;
         const vt = (b.vx - a.vx) * tx + (b.vy - a.vy) * ty;
-        const jt = -vt * 0.3 / isim;
+        const jt = -vt * 0.25 / isim;
         a.vx -= jt * ima * tx; a.vy -= jt * ima * ty;
         b.vx += jt * imb * tx; b.vy += jt * imb * ty;
       }
     }
+    /* 衝突の押し出しで境界にめり込んだブロックを、眠っているものも含めて必ず内側へ戻す */
+    for (const b of T.bodies) collideField(b);
   }
   if (calm) {
     const f = Math.pow(0.002, dt);
-    for (const b of P.blocks) if (!b.sleep) { b.vx *= f; b.vy *= f; }
+    for (const b of T.bodies) if (!b.sleep) { b.vx *= f; b.vy *= f; }
   }
-  /* 低速が続いたブロックから眠らせる（下から順に静止していく） */
-  let allSleep = true;
-  for (const b of P.blocks) {
+  let allSleep = T.bodies.length >= TBODIES;
+  for (const b of T.bodies) {
     if (!b.sleep) {
-      if (Math.hypot(b.vx, b.vy) < 0.5) {
+      if (Math.hypot(b.vx, b.vy) < 0.75) {
         b.rest += dt;
-        if (b.rest >= 0.22) { b.sleep = true; b.vx = 0; b.vy = 0; }
+        if (b.rest >= 0.15) { b.sleep = true; b.vx = 0; b.vy = 0; }
       } else b.rest = 0;
     }
     if (!b.sleep) allSleep = false;
-    b.el.style.transform = "translate(" + ((b.x - rad) * CS) + "px," + ((b.y - rad) * CS) + "px)";
+    placeBodyEl(b);
   }
-  if (allSleep || P.t > 3.2) finishShake();
+  const spawned = !T.spawnQueue.length && T.bodies.length >= TBODIES;
+  if (spawned && (allSleep || T.simT > 6)) onSettled();
 }
-async function finishShake() {
-  const P = T.phys;
-  if (!P) return;
-  T.phys = null;
-  const assign = assignCells(P.blocks, TROWS, COLS);
-  for (const b of P.blocks) b.el.style.transition = "transform .28s ease";
-  for (const a of assign) {
-    const b = P.blocks[a.i];
-    b.el.style.transform = "translate(" + (a.c * CS + 3) + "px," + (a.r * CS + 3) + "px)";
-  }
-  await sleep(300);
-  if (!T) return;
-  const grid = Array.from({ length: TROWS }, () => Array(COLS).fill(null));
-  for (const a of assign) grid[a.r][a.c] = P.blocks[a.i].mora;
-  T.grid = grid;
-  if (countTraceable(T.grid, TROWS, 2) < 2) T.grid = shuffledGrid(T.grid, TROWS);
-  T.shaking = false;
-  renderTsumi();
+function onSettled() {
+  letterFix(T.bodies);
+  T.settled = true;
+  T.started = true;
 }
-function flashTrace(text) {
-  const b = $("traceBanner");
-  b.textContent = text; b.classList.remove("ok"); b.style.display = "block";
-  setTimeout(() => { if (!T || !T.path.length) b.style.display = "none"; }, 1100);
-}
-function updateTsumiPanel() {
-  $("scoreVal").textContent = T.score;
-  $("statLine").textContent = "ことば " + T.words + "こ";
-  $("lastWords").innerHTML = T.lastWords.length
-    ? T.lastWords.map(l => '<div class="lw"><b>' + l.w + "</b>（" + l.reading + "） +" + l.gain + "<br>" + l.m + "</div>").join("")
-    : '<div class="lw">まだ ないよ</div>';
-}
-function refillPick() {
-  const wanted = computeWanted(T.grid, TROWS);
-  if (wanted.size && Math.random() < 0.3) {
-    const a = [...wanted];
-    return a[Math.floor(Math.random() * a.length)];
-  }
-  return pickMoraFreq();
-}
-function tsumiSettle() {
-  for (let c = 0; c < COLS; c++) {
-    const stack = [];
-    for (let r = TROWS - 1; r >= 0; r--) if (T.grid[r][c]) stack.push(T.grid[r][c]);
-    for (let r = TROWS - 1; r >= 0; r--) T.grid[r][c] = stack[TROWS - 1 - r] || null;
-    for (let r = 0; r < TROWS; r++) if (!T.grid[r][c]) T.grid[r][c] = refillPick();
-  }
-}
-async function tsumiClearStep(matches, chain) {
-  for (const m of matches) {
-    const gain = m.len * m.len * 10 * chain;
-    T.score += gain; T.words++;
-    SAVE.zukan[m.reading] = (SAVE.zukan[m.reading] || 0) + 1;
-    const info = WORD_INFO.get(m.reading);
-    T.lastWords.unshift({ reading: m.reading, w: info ? info.w : m.reading, m: info ? info.m : "", gain });
-  }
+/* なぞった単語を消す。自動連鎖はしない。消えた分は上からぱらぱら補充される */
+async function clearWord(pathBodies) {
+  const reading = pathBodies.map(b => b.mora).join("");
+  const len = pathBodies.length;
+  const gain = len * len * 10;
+  T.score += gain; T.words++;
+  SAVE.zukan[reading] = (SAVE.zukan[reading] || 0) + 1;
+  const info = WORD_INFO.get(reading);
+  T.lastWords.unshift({ reading, w: info ? info.w : reading, m: info ? info.m : "", gain });
   T.lastWords = T.lastWords.slice(0, 3);
   saveSave();
-  const main = matches.reduce((a, b) => (b.len > a.len ? b : a), matches[0]);
-  showToast({ reading: main.reading, len: main.len }, WORD_INFO.get(main.reading), chain);
-  speak(main.reading);
-  if (chain >= 2) {
-    const ct = $("chainToast");
-    ct.textContent = chain + " れんさ！";
-    ct.style.display = "block";
-    setTimeout(() => { ct.style.display = "none"; }, 900);
-  }
-  const keys = new Set();
-  matches.forEach(m => m.cells.forEach(([r, c]) => keys.add(r + ":" + c)));
-  tsumiEls.forEach(el => { if (keys.has(el.dataset.r + ":" + el.dataset.c)) el.classList.add("clearing"); });
-  sfx("clear", chain);
+  showToast({ reading, len }, info, 1);
+  speak(reading);
+  sfx("clear", 1);
+  pathBodies.forEach(b => b.el.classList.add("clearing"));
   updateTsumiPanel();
-  await sleep(360);
-  matches.forEach(m => m.cells.forEach(([r, c]) => { T.grid[r][c] = null; }));
-  tsumiSettle();
-  renderTsumi();
-  await sleep(90);
-}
-async function tsumiResolve(first) {
-  T.resolving = true;
-  await tsumiClearStep([first], 1);
-  let chain = 1;
-  for (;;) {
-    const ms = findWordsHV(T.grid, TROWS, 3);
-    if (!ms.length) break;
-    chain++;
-    await tsumiClearStep(ms, chain);
-  }
-  T.maxChain = Math.max(T.maxChain, chain);
-  if (!T.over && countTraceable(T.grid, TROWS, 1) === 0) {
-    T.grid = genTsumiBoard();
-    renderTsumi();
-    flashTrace("シャッフル！");
-  }
-  T.resolving = false;
+  T.settled = false;
+  await sleep(330);
+  if (!T) return;
+  for (const b of pathBodies) b.el.remove();
+  T.bodies = T.bodies.filter(b => !pathBodies.includes(b));
+  for (const b of T.bodies) { b.sleep = false; b.rest = 0; }
+  T.spawnQueue = pathBodies.map(() => ({ mora: pickMoraFreq(), x: 2.1 + Math.random() * 3.8 }));
+  T.spawnT = 0; T.simT = 0;
 }
 function tsumiFinish() {
   if (!T || T.over) return;
@@ -1061,62 +1038,56 @@ function tsumiFinish() {
   sfx("over");
   $("ovTitle").textContent = "⏱ じかん しゅうりょう！";
   $("ovText").innerHTML = "スコア <b>" + T.score + "</b>" + (isBest ? "（ベスト更新！）" : "（ベスト " + (SAVE.best2 || 0) + "）") +
-    "<br>つくった ことば " + T.words + "こ ／ れんさ さいだい " + T.maxChain + "れんさ";
+    "<br>つくった ことば " + T.words + "こ";
   $("overOv").classList.add("active");
 }
-/* 近接判定： セルの中心から CONNECT_R（セル単位）以内に指が近づけば、そのブロックに繋がる。
-   円形ブロック同士の隙間（中心間1.0、対角の隙間中心まで0.71）より大きく取り、間が空いても繋がるようにする */
-const CONNECT_R = 0.72;
-function nearestCell(fx, fy) {
-  let best = null, bestD = CONNECT_R;
-  const c0 = Math.floor(fx), r0 = Math.floor(fy);
-  for (let r = r0 - 1; r <= r0 + 1; r++) for (let c = c0 - 1; c <= c0 + 1; c++) {
-    if (r < 0 || r >= TROWS || c < 0 || c >= COLS) continue;
-    const d = Math.hypot(fx - (c + 0.5), fy - (r + 0.5));
-    if (d < bestD) { bestD = d; best = [r, c]; }
-  }
-  return best;
-}
+/* 近接判定： 指に最も近いブロックを掴む。接続はブロック同士の距離（ADJ_D）で決まる */
 function pointerUnits(e) {
   const rect = $("board").getBoundingClientRect();
   const scale = rect.width / (COLS * CS);
   return { x: (e.clientX - rect.left) / scale / CS, y: (e.clientY - rect.top) / scale / CS };
 }
 let lastTraceP = null;
-function tryConnectAt(fx, fy) {
-  const cell = nearestCell(fx, fy);
-  if (!cell) return;
-  if (!T.path.length) { T.path = [cell]; updateTraceUI(); return; }
+function nearestBody(fx, fy) {
+  let best = null, bestD = CONNECT_D;
+  for (const b of T.bodies) {
+    const d = Math.hypot(fx - b.x, fy - b.y);
+    if (d < bestD) { bestD = d; best = b; }
+  }
+  return best;
+}
+function tryConnectBody(fx, fy) {
+  const b = nearestBody(fx, fy);
+  if (!b) return;
+  if (!T.path.length) { T.path = [b]; updateTraceUI(); return; }
   const last = T.path[T.path.length - 1];
-  if (cell[0] === last[0] && cell[1] === last[1]) return;
+  if (b === last) return;
   const prev = T.path[T.path.length - 2];
-  if (prev && cell[0] === prev[0] && cell[1] === prev[1]) { T.path.pop(); updateTraceUI(); return; }
-  if (Math.abs(cell[0] - last[0]) <= 1 && Math.abs(cell[1] - last[1]) <= 1 &&
-      !T.path.some(([r, c]) => r === cell[0] && c === cell[1])) {
-    T.path.push(cell);
+  if (prev && b === prev) { T.path.pop(); updateTraceUI(); return; }
+  if (!T.path.includes(b) && Math.hypot(b.x - last.x, b.y - last.y) <= ADJ_D) {
+    T.path.push(b);
     updateTraceUI();
   }
 }
 function tsumiPointer(e, phase) {
-  if (!T || T.over || T.shaking) return;
+  if (!T || T.over || !T.settled) return;
   if (phase === "down") {
-    if (T.resolving) return;
     const p = pointerUnits(e);
     lastTraceP = p;
     T.path = [];
     traceActive = true;
-    tryConnectAt(p.x, p.y);
+    tryConnectBody(p.x, p.y);
   } else if (phase === "move" && traceActive) {
     const p = pointerUnits(e);
     if (lastTraceP) {
-      /* 速くなぞっても途切れないよう、前回の位置から今回の位置までを細かく補間して判定する */
+      /* 速くなぞっても途切れないよう、前回位置から補間して判定する */
       const dist = Math.hypot(p.x - lastTraceP.x, p.y - lastTraceP.y);
-      const steps = Math.max(1, Math.ceil(dist / 0.22));
+      const steps = Math.max(1, Math.ceil(dist / 0.2));
       for (let i = 1; i <= steps; i++) {
-        tryConnectAt(lastTraceP.x + (p.x - lastTraceP.x) * i / steps,
-                     lastTraceP.y + (p.y - lastTraceP.y) * i / steps);
+        tryConnectBody(lastTraceP.x + (p.x - lastTraceP.x) * i / steps,
+                       lastTraceP.y + (p.y - lastTraceP.y) * i / steps);
       }
-    } else tryConnectAt(p.x, p.y);
+    } else tryConnectBody(p.x, p.y);
     lastTraceP = p;
   } else if (phase === "up") {
     if (!traceActive) return;
@@ -1124,29 +1095,23 @@ function tsumiPointer(e, phase) {
     lastTraceP = null;
     const path = T.path;
     T.path = [];
-    if (path.length >= 2 && !T.resolving && !T.over) {
-      const str = path.map(([r, c]) => T.grid[r][c]).join("");
-      if (WORDSET.has(str)) {
-        updateTraceUI();
-        tsumiResolve({ reading: str, len: path.length, cells: path });
-        return;
-      }
+    if (path.length >= 2) {
+      const str = path.map(b => b.mora).join("");
+      if (WORDSET.has(str)) { updateTraceUI(); clearWord(path); return; }
     }
     updateTraceUI();
   }
 }
 
-/* ===== メインループ・入力 ===== */
-let lastT = 0;
 function loop(t) {
   const dt = Math.min(0.05, (t - lastT) / 1000 || 0); lastT = t;
-  if (T && !T.over && $("game").classList.contains("active")) {
+  if (T && !T.over && T.started && $("game").classList.contains("active")) {
     T.left -= dt;
     const sec = Math.max(0, Math.ceil(T.left));
     if (sec !== T.lastShownSec) { T.lastShownSec = sec; $("timerVal").textContent = "⏱ " + sec; }
     if (T.left <= 0) tsumiFinish();
   }
-  if (T && T.phys) stepPhys(dt);
+  if (T) stepTsumi(dt);
   if (G && G.falling && !G.resolving && !G.over) {
     const f = G.falling;
     trySlide();
