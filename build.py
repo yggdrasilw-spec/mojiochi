@@ -9,6 +9,14 @@ ROOT = Path(__file__).parent
 def main():
     tpl = (ROOT / "kana_drop_template.html").read_text(encoding="utf-8")
     d = json.loads((ROOT / "dict.json").read_text(encoding="utf-8"))
+    # 追加辞書（地名など元辞書に欠けている語を補う。既存の読みとは重ねない）
+    extra_path = ROOT / "extra_words.json"
+    if extra_path.exists():
+        extra = json.loads(extra_path.read_text(encoding="utf-8"))
+        seen = {row[0] for row in d}
+        added = [row for row in extra if row[0] not in seen]
+        d = d + added
+        print(f"extra words: +{len(added)} (of {len(extra)} candidates)")
     assert "/*__DICT__*/" in tpl
     html = tpl.replace("/*__DICT__*/[]", json.dumps(d, ensure_ascii=False))
     out = ROOT / "kana_drop.html"

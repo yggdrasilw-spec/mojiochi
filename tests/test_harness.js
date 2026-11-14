@@ -225,6 +225,9 @@ global.speechSynthesis = { cancel() {}, speak() {} };
     // 接頭辞集合の健全性
     ok(PREFIX_SET.has("りん"), "prefix set has りん");
     ok(!PREFIX_SET.has("りんごはし"), "prefix set rejects non-prefix");
+    /* 追加辞書： 元辞書に欠けていた主要地名が入っていること */
+    for (const p of ["おのみち", "ふくやま", "みはら", "なごや", "さっぽろ", "よこはま", "こうべ", "まつやま", "たかまつ", "いわて", "えひめ"])
+      ok(WORDSET.has(p), "extra dict has place name " + p);
   }
   /* ===== letterFix： 単語ゼロの盤面に単語を埋め込めること ===== */
   {
