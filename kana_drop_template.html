@@ -97,7 +97,8 @@
   #wordToast .tw { font-size:52px; font-weight:900; color:#26355d; letter-spacing:.06em; }
   #wordToast .tm { font-size:22px; font-weight:800; color:#47608f; margin-top:2px; }
   #wordToast .ts { font-size:24px; font-weight:900; color:#ff595e; }
-  #chainToast { position:absolute; left:50%; top:300px; transform:translateX(-50%); z-index:70; font-size:64px; font-weight:900; color:#ff8c42; text-shadow:0 4px 0 #fff, 0 8px 0 rgba(38,53,93,.15); display:none; }
+  #chainToast { position:absolute; left:50%; top:300px; transform:translateX(-50%); z-index:70; font-size:64px; font-weight:900; color:#ff8c42; text-shadow:0 4px 0 #fff, 0 8px 0 rgba(38,53,93,.15); display:none; animation:chainPop .35s ease; }
+  @keyframes chainPop { 0% { transform:translateX(-50%) scale(.5); opacity:0; } 60% { transform:translateX(-50%) scale(1.12); opacity:1; } 100% { transform:translateX(-50%) scale(1); } }
 
   /* ===== ずかん ===== */
   #zukanGrid { flex:1; width:1180px; overflow-y:auto; display:grid; grid-template-columns:repeat(4, 1fr); gap:12px; padding:10px 6px 90px; align-content:start; }
@@ -496,27 +497,39 @@ function segmentsInRow(grid, r) {
   if (cur) segs.push(cur);
   return segs;
 }
+function segmentsInCol(grid, c) {
+  const segs = []; let cur = null;
+  for (let r = 0; r < ROWS; r++) {
+    if (grid[r][c]) { if (!cur) cur = { start: r, units: [] }; cur.units.push(grid[r][c]); }
+    else if (cur) { segs.push(cur); cur = null; }
+  }
+  if (cur) segs.push(cur);
+  return segs;
+}
+/* 単語検出： 横（左→右）も縦（上→下）も拾う。最長一致優先で、セルを共有する候補は片方だけ採用 */
 function findWords(grid) {
   const all = [];
-  for (let r = 0; r < ROWS; r++) {
-    for (const seg of segmentsInRow(grid, r)) {
-      const u = seg.units, n = u.length;
-      for (let i = 0; i < n; i++) {
-        let s = "";
-        for (let L = 1; L <= 7 && i + L <= n; L++) {
-          s += u[i + L - 1];
-          if (L >= 2 && WORDSET.has(s)) all.push({ row: r, start: seg.start + i, len: L, reading: s });
+  const scan = (units, cellAt, vert) => {
+    const n = units.length;
+    for (let i = 0; i < n; i++) {
+      let s = "";
+      for (let L = 1; L <= 7 && i + L <= n; L++) {
+        s += units[i + L - 1];
+        if (L >= 2 && WORDSET.has(s)) {
+          const cells = [];
+          for (let k = 0; k < L; k++) cells.push(cellAt(i + k));
+          all.push({ len: L, reading: s, cells, row: cells[0][0], start: cells[0][1], vert });
         }
       }
     }
-  }
-  all.sort((a, b) => b.len - a.len || a.row - b.row || a.start - b.start);
+  };
+  for (let r = 0; r < ROWS; r++) for (const seg of segmentsInRow(grid, r)) scan(seg.units, k => [r, seg.start + k], false);
+  for (let c = 0; c < COLS; c++) for (const seg of segmentsInCol(grid, c)) scan(seg.units, k => [seg.start + k, c], true);
+  all.sort((a, b) => b.len - a.len || (a.vert ? 1 : 0) - (b.vert ? 1 : 0) || a.row - b.row || a.start - b.start);
   const used = new Set(), picked = [];
   for (const m of all) {
-    let overlap = false;
-    for (let k = 0; k < m.len; k++) if (used.has(m.row + ":" + (m.start + k))) { overlap = true; break; }
-    if (overlap) continue;
-    for (let k = 0; k < m.len; k++) used.add(m.row + ":" + (m.start + k));
+    if (m.cells.some(([r, c]) => used.has(r + ":" + c))) continue;
+    for (const [r, c] of m.cells) used.add(r + ":" + c);
     picked.push(m);
   }
   return picked;
@@ -534,21 +547,20 @@ function landRow(grid, col) {
 }
 function computeWanted(grid, rows) {
   const wanted = new Set();
-  for (let r = 0; r < (rows || ROWS); r++) {
-    for (const seg of segmentsInRow(grid, r)) {
-      const u = seg.units;
-      for (let i = 0; i < u.length; i++) {
-        let s = "";
-        for (let L = 1; L <= 6 && i + L <= u.length; L++) {
-          s += u[i + L - 1];
-          if (L >= 2) {
-            if (PREFIX_NEXT.has(s)) for (const mo of PREFIX_NEXT.get(s)) wanted.add(mo);
-            if (SUFFIX_PREV.has(s)) for (const mo of SUFFIX_PREV.get(s)) wanted.add(mo);
-          }
+  const fromUnits = u => {
+    for (let i = 0; i < u.length; i++) {
+      let s = "";
+      for (let L = 1; L <= 6 && i + L <= u.length; L++) {
+        s += u[i + L - 1];
+        if (L >= 2) {
+          if (PREFIX_NEXT.has(s)) for (const mo of PREFIX_NEXT.get(s)) wanted.add(mo);
+          if (SUFFIX_PREV.has(s)) for (const mo of SUFFIX_PREV.get(s)) wanted.add(mo);
         }
       }
     }
-  }
+  };
+  for (let r = 0; r < (rows || ROWS); r++) for (const seg of segmentsInRow(grid, r)) fromUnits(seg.units);
+  for (let c = 0; c < COLS; c++) for (const seg of segmentsInCol(grid, c)) fromUnits(seg.units);
   return wanted;
 }
 function pickMoraFreq() {
@@ -708,6 +720,26 @@ function placeBlock() {
   renderSettled();
   resolveBoard();
 }
+/* 落ちものの消去演出： セルごとに粒子、単語ごとにスコアポップ（縦単語は「たて！」） */
+function spawnGridJuice(matches, chain) {
+  const board = $("board");
+  if (!board) return;
+  for (const m of matches) {
+    let cx = 0, cy = 0;
+    for (const [r, c] of m.cells) {
+      cx += c * CS + CS / 2; cy += r * CS + CS / 2;
+      burst(c * CS + CS / 2, r * CS + CS / 2, m.len >= 5 ? 9 : 5);
+    }
+    cx /= m.len; cy /= m.len;
+    const pop = document.createElement("div");
+    pop.className = "scorePop";
+    pop.style.left = cx + "px"; pop.style.top = cy + "px";
+    pop.style.fontSize = Math.round(CS * (m.len >= 5 ? 0.9 : 0.62)) + "px";
+    pop.textContent = "+" + (m.len * m.len * 10 * chain) + (m.vert ? " たて！" : "");
+    board.appendChild(pop);
+    setTimeout(() => pop.remove(), 900);
+  }
+}
 async function resolveBoard() {
   G.resolving = true;
   let chain = 0;
@@ -718,12 +750,15 @@ async function resolveBoard() {
     G.maxChain = Math.max(G.maxChain, chain);
     registerClears(matches, chain);
     const keys = new Set();
-    matches.forEach(m => { for (let k = 0; k < m.len; k++) keys.add(m.row + ":" + (m.start + k)); });
+    matches.forEach(m => m.cells.forEach(([r, c]) => keys.add(r + ":" + c)));
     settledEls.forEach(el => { if (keys.has(el.dataset.r + ":" + el.dataset.c)) el.classList.add("clearing"); });
     sfx("clear", chain);
+    spawnGridJuice(matches, chain);
+    hitStop = Math.min(0.14, 0.05 + chain * 0.02); /* 落ちもの側もヒットストップ */
+    if (matches.some(m => m.len >= 5)) { const bd = $("board"); bd.classList.remove("glowPulse"); void bd.offsetWidth; bd.classList.add("glowPulse"); }
     updatePanel();
     await sleep(360);
-    matches.forEach(m => { for (let k = 0; k < m.len; k++) G.grid[m.row][m.start + k] = null; });
+    matches.forEach(m => m.cells.forEach(([r, c]) => { G.grid[r][c] = null; }));
     applyGravity(G.grid);
     renderSettled();
     await sleep(90);
@@ -807,20 +842,19 @@ function markOneAway() {
   const on = settings.hint;
   const wantedSegs = new Set();
   if (on) {
-    for (let r = 0; r < ROWS; r++) {
-      for (const seg of segmentsInRow(G.grid, r)) {
-        const u = seg.units;
-        for (let i = 0; i < u.length; i++) {
-          let s = "";
-          for (let L = 1; L <= 6 && i + L <= u.length; L++) {
-            s += u[i + L - 1];
-            if (L >= 2 && (PREFIX_NEXT.has(s) || SUFFIX_PREV.has(s))) {
-              for (let k = 0; k < L; k++) wantedSegs.add(r + ":" + (seg.start + i + k));
-            }
+    const scanSeg = (units, cellAt) => {
+      for (let i = 0; i < units.length; i++) {
+        let s = "";
+        for (let L = 1; L <= 6 && i + L <= units.length; L++) {
+          s += units[i + L - 1];
+          if (L >= 2 && (PREFIX_NEXT.has(s) || SUFFIX_PREV.has(s))) {
+            for (let k = 0; k < L; k++) { const [r, c] = cellAt(i + k); wantedSegs.add(r + ":" + c); }
           }
         }
       }
-    }
+    };
+    for (let r = 0; r < ROWS; r++) for (const seg of segmentsInRow(G.grid, r)) scanSeg(seg.units, k => [r, seg.start + k]);
+    for (let c = 0; c < COLS; c++) for (const seg of segmentsInCol(G.grid, c)) scanSeg(seg.units, k => [seg.start + k, c]);
   }
   settledEls.forEach(el => el.classList.toggle("oneaway", wantedSegs.has(el.dataset.r + ":" + el.dataset.c)));
 }
@@ -1085,6 +1119,23 @@ function onSettled() {
   T.started = true;
   pumpQueue();
 }
+/* 演出部品： 指定位置（盤面px）にカラー粒子を飛ばす */
+function burst(x, y, n) {
+  const board = $("board");
+  if (!board) return;
+  for (let i = 0; i < n; i++) {
+    const p = document.createElement("div");
+    p.className = "part";
+    const sz = 7 + Math.random() * 8;
+    p.style.width = sz + "px"; p.style.height = sz + "px";
+    p.style.left = (x - sz / 2) + "px"; p.style.top = (y - sz / 2) + "px";
+    p.style.background = ["#ffb703", "#ff8fab", "#8ac926", "#4cc9f0", "#ffd6dd"][i % 5];
+    p.style.setProperty("--dx", ((Math.random() - 0.5) * 170) + "px");
+    p.style.setProperty("--dy", (-30 - Math.random() * 110) + "px");
+    board.appendChild(p);
+    setTimeout(() => p.remove(), 600);
+  }
+}
 /* 演出： 消去位置から粒子を飛ばし、スコアポップを浮かせる */
 function spawnJuice(pathBodies, gain, combo, len) {
   const board = $("board");
@@ -1093,18 +1144,7 @@ function spawnJuice(pathBodies, gain, combo, len) {
   let cx = 0, cy = 0;
   for (const b of pathBodies) {
     cx += b.x; cy += b.y;
-    for (let i = 0; i < per; i++) {
-      const p = document.createElement("div");
-      p.className = "part";
-      const sz = 7 + Math.random() * 8;
-      p.style.width = sz + "px"; p.style.height = sz + "px";
-      p.style.left = (b.x * CS - sz / 2) + "px"; p.style.top = (b.y * CS - sz / 2) + "px";
-      p.style.background = ["#ffb703", "#ff8fab", "#8ac926", "#4cc9f0", "#ffd6dd"][i % 5];
-      p.style.setProperty("--dx", ((Math.random() - 0.5) * 170) + "px");
-      p.style.setProperty("--dy", (-30 - Math.random() * 110) + "px");
-      board.appendChild(p);
-      setTimeout(() => p.remove(), 600);
-    }
+    burst(b.x * CS, b.y * CS, per);
   }
   cx = cx / pathBodies.length * CS; cy = cy / pathBodies.length * CS;
   const pop = document.createElement("div");

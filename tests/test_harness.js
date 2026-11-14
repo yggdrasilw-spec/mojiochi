@@ -118,9 +118,16 @@ global.speechSynthesis = { cancel() {}, speak() {} };
   // 隙間があると単語にならない
   g = gridWith([[10, 0, "り"], [10, 2, "ご"]]);
   ok(findWords(g).length === 0, "gap breaks word");
-  // 縦並びは検出しない（仕様）
+  // 縦並びも検出する（上→下で読む）
   g = gridWith([[8, 0, "り"], [9, 0, "ん"], [10, 0, "ご"]]);
-  ok(findWords(g).length === 0, "vertical not detected");
+  ms = findWords(g);
+  ok(ms.length === 1 && ms[0].reading === "りんご" && ms[0].vert === true && ms[0].cells.length === 3,
+     "vertical word detected: " + JSON.stringify(ms.map(m => m.reading)));
+  // 縦横でセルを共有する場合は片方だけ（二重消ししない）： あい（縦）と いぬ（横）で「い」を共有
+  g = gridWith([[9, 0, "あ"], [10, 0, "い"], [10, 1, "ぬ"]]);
+  ms = findWords(g);
+  ok(ms.length === 1 && ms[0].reading === "いぬ", "cross sharing: only one word claims the shared cell: " +
+     JSON.stringify(ms.map(m => m.reading)));
   // 拗音は1セル=1モーラとして並ぶ
   g = gridWith([[10, 0, "きゅ"], [10, 1, "う"], [10, 2, "り"]]);
   ms = findWords(g);
@@ -144,6 +151,9 @@ global.speechSynthesis = { cancel() {}, speak() {} };
   // 後方一致： 「んご」の断片からは「り」が候補になる
   const w3 = computeWanted(gridWith([[10, 0, "ん"], [10, 1, "ご"]]));
   ok(w3.has("り"), "suffix assist wants り for _んご: " + [...w3].join(","));
+  // 縦の断片（り・ん が縦に積まれた）からも「ご」が候補になる
+  const w4 = computeWanted(gridWith([[8, 0, "り"], [9, 0, "ん"]]));
+  ok(w4.has("ご"), "vertical assist wants ご for vertical りん_: " + [...w4].join(","));
   // スポーン分布： 頻出モーラがちゃんと出る＆全て辞書内のモーラ
   const counts = {};
   for (let i = 0; i < 4000; i++) { const mo = pickMoraFreq(); counts[mo] = (counts[mo] || 0) + 1; if (!MORA_FREQ.has(mo)) { ok(false, "spawn unknown mora " + mo); break; } }
@@ -180,7 +190,7 @@ global.speechSynthesis = { cancel() {}, speak() {} };
         const ms = findWords(grid);
         if (!ms.length) break;
         chain++; wordsMade += ms.length;
-        for (const m of ms) for (let k = 0; k < m.len; k++) grid[m.row][m.start + k] = null;
+        for (const m of ms) for (const [r, c] of m.cells) grid[r][c] = null;
         applyGravity(grid);
       }
       chainsTotal += chain; maxChainSim = Math.max(maxChainSim, chain);
