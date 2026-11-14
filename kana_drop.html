@@ -65,6 +65,9 @@
   /* 演出： なぞったブロックの膨らみ、消去パーティクル、スコアポップ、残り時間警告 */
   .blk { transition:scale .12s ease; }
   .blk.inpath { scale:1.13; }
+  .blk.reserved { outline:4px dashed #ffb703; outline-offset:-3px; filter:brightness(1.12); }
+  #board.boardShake { animation:bShake .18s linear; }
+  @keyframes bShake { 25% { transform:translate(3px,-2px); } 50% { transform:translate(-3px,2px); } 75% { transform:translate(2px,1px); } }
   .part { position:absolute; border-radius:50%; pointer-events:none; z-index:8; animation:partFly .55s ease-out forwards; }
   @keyframes partFly { to { transform:translate(var(--dx), var(--dy)) scale(.2); opacity:0; } }
   .scorePop { position:absolute; z-index:9; pointer-events:none; font-weight:900; color:#ff8c42; text-shadow:0 2px 0 #fff, 0 4px 10px rgba(255,140,66,.45); transform:translate(-50%,-50%); animation:floatUp .85s ease-out forwards; white-space:nowrap; }
@@ -817,6 +820,7 @@ function missionProgress(ms, m, chain) {
 
 /* ===== もじつみ（第2モード） ===== */
 let T = null, curMode = "endless", traceActive = false;
+let hitStop = 0; /* ヒットストップ残り時間（秒）。単語消去時に物理とタイマーを一瞬止める */
 let traceSvgEl = null, traceLineEl = null, fieldShapeEl = null;
 function sizeBodyEl(b) {
   const dia = Math.round(TRAD * 2 * CS);
@@ -849,7 +853,8 @@ function startTsumi() {
   document.querySelectorAll("#board .blk").forEach(e => e.remove());
   T = { bodies: [], path: [], score: 0, words: 0, maxChain: 0, left: TSUMI_TIME,
         over: false, settled: false, started: false, lastWords: [], lastShownSec: 99,
-        shakes: PARAMS.shakes, spawnQueue: [], spawnT: 0, simT: 0, rainEnd: null, combo: 0, lastClearAt: 0 };
+        shakes: PARAMS.shakes, spawnQueue: [], spawnT: 0, simT: 0, rainEnd: null, combo: 0, lastClearAt: 0,
+        queue: [], busy: false, executing: null };
   $("gameTitle").textContent = "もじつみ";
   $("gameMode").textContent = "🧩 もじを なぞって ことばを つくろう";
   $("timerVal").style.display = "";
@@ -873,7 +878,8 @@ function updateTsumiPanel() {
   const sv = $("scoreVal");
   sv.textContent = T.score;
   sv.classList.remove("bump"); void sv.offsetWidth; sv.classList.add("bump");
-  $("statLine").textContent = "ことば " + T.words + "こ" + (T.combo >= 2 ? " ／ コンボ×" + T.combo : "");
+  $("statLine").textContent = "ことば " + T.words + "こ" + (T.combo >= 2 ? " ／ コンボ×" + T.combo : "") +
+    (T.queue && T.queue.length ? " ／ よやく " + T.queue.length + "こ" : "");
   $("lastWords").innerHTML = T.lastWords.length
     ? T.lastWords.map(l => '<div class="lw"><b>' + l.w + "</b>（" + l.reading + "） +" + l.gain + "<br>" + l.m + "</div>").join("")
     : '<div class="lw">まだ ないよ</div>';
@@ -906,10 +912,13 @@ function updateShakeBtn() {
 function shakeField() {
   if (!T || T.over || !T.settled || T.shakes <= 0) return;
   T.shakes--;
+  /* 予約は取り消す（盤面が跳ねて並びが変わるため） */
+  if (T.queue) { for (const q of T.queue) q.path.forEach(b => { if (b.el) b.el.classList.remove("reserved"); }); T.queue = []; }
   T.path = [];
   traceActive = false;
   updateTraceUI();
   updateShakeBtn();
+  updateTsumiPanel();
   sfx("shake");
   for (const b of T.bodies) {
     b.sleep = false; b.rest = 0;
@@ -1036,18 +1045,25 @@ function stepTsumi(dt) {
   if (spawned && (allSleep || T.simT > 9)) onSettled();
 }
 function onSettled() {
+  /* 予約済み・なぞり途中のブロックは letterFix で文字を変えない（示した単語を守る） */
+  const keep = new Map();
+  for (const b of reservedBodies()) keep.set(b, b.mora);
+  if (T.path) for (const b of T.path) keep.set(b, b.mora);
   letterFix(T.bodies);
+  for (const [b, m] of keep) if (b.mora !== m) setBodyMora(b, m);
   T.settled = true;
   T.started = true;
+  pumpQueue();
 }
 /* 演出： 消去位置から粒子を飛ばし、スコアポップを浮かせる */
-function spawnJuice(pathBodies, gain, combo) {
+function spawnJuice(pathBodies, gain, combo, len) {
   const board = $("board");
   if (!board) return;
+  const per = len >= 5 ? 12 : 7; /* 長い単語ほど粒子を多く */
   let cx = 0, cy = 0;
   for (const b of pathBodies) {
     cx += b.x; cy += b.y;
-    for (let i = 0; i < 7; i++) {
+    for (let i = 0; i < per; i++) {
       const p = document.createElement("div");
       p.className = "part";
       const sz = 7 + Math.random() * 8;
@@ -1065,18 +1081,57 @@ function spawnJuice(pathBodies, gain, combo) {
   pop.className = "scorePop";
   pop.style.left = cx + "px"; pop.style.top = cy + "px";
   pop.style.fontSize = Math.round(CS * (pathBodies.length >= 5 ? 0.95 : pathBodies.length >= 4 ? 0.8 : 0.62)) + "px";
-  pop.textContent = "+" + gain + (combo >= 2 ? " コンボ×" + combo + "!" : "");
+  pop.textContent = "+" + gain + (combo >= 2 ? " コンボ×" + combo + "!" : "") + (len >= 5 ? " ロング！" : "");
   board.appendChild(pop);
   setTimeout(() => pop.remove(), 900);
 }
+/* 予約済み（キュー内＋消去中）のブロック集合。これらは再なぞり不可で、letterFixでも文字を変えない */
+function reservedBodies() {
+  const s = new Set();
+  if (!T) return s;
+  for (const q of (T.queue || [])) for (const b of q.path) s.add(b);
+  if (T.executing) for (const b of T.executing) s.add(b);
+  return s;
+}
+/* 成立した単語を「示す（予約する）」。黄色の破線で示したまま保持され、前の消去が
+   終わり次第どんどん連続で消える。複数を同時に示せるので、次の単語を消す入力が
+   待機させられない */
+function submitWord(path) {
+  if (!T || T.over || !path.length) return;
+  if (!T.queue) T.queue = [];
+  for (const b of path) b.el.classList.add("reserved");
+  T.queue.push({ path: path.slice(), at: Date.now() });
+  sfx("select");
+  updateTsumiPanel();
+  pumpQueue();
+}
+async function pumpQueue() {
+  /* 静止を待たない： 予約した単語は前の消去が終わり次第どんどん連続で消す */
+  if (!T || T.busy || !T.queue || !T.queue.length) return;
+  const q = T.queue.shift();
+  const path = q.path;
+  updateTsumiPanel();
+  const valid = path.every(b => T.bodies.includes(b)) && WORDSET.has(path.map(b => b.mora).join(""));
+  if (!valid) { path.forEach(b => { if (b.el) b.el.classList.remove("reserved"); }); pumpQueue(); return; }
+  T.busy = true;
+  T.executing = path;
+  await clearWord(path, q.at);
+  if (!T) return;
+  T.executing = null;
+  T.busy = false;
+  pumpQueue();
+}
 /* なぞった単語を消す。自動連鎖はしない。消えた分は上からぱらぱら補充される */
-async function clearWord(pathBodies) {
+async function clearWord(pathBodies, atTime) {
+  pathBodies.forEach(b => { if (b.el) b.el.classList.remove("reserved"); });
   const reading = pathBodies.map(b => b.mora).join("");
   const len = pathBodies.length;
-  const now = Date.now();
+  const now = atTime || Date.now(); /* コンボ判定は「示した時刻」で行う（実行待ちで損をしない） */
   T.combo = (now - T.lastClearAt < 4000) ? T.combo + 1 : 1;
   T.lastClearAt = now;
-  const gain = len * len * 10 + (T.combo - 1) * 20;
+  /* 長い単語ほどボーナスを厚く： 4文字+30 / 5文字+120 / 6文字+270 / 7文字+480 */
+  const lenBonus = len > 3 ? (len - 3) * (len - 3) * 30 : 0;
+  const gain = len * len * 10 + lenBonus + (T.combo - 1) * 20;
   T.score += gain; T.words++;
   SAVE.zukan[reading] = (SAVE.zukan[reading] || 0) + 1;
   const info = WORD_INFO.get(reading);
@@ -1086,8 +1141,10 @@ async function clearWord(pathBodies) {
   showToast({ reading, len }, info, 1);
   speak(reading);
   sfx("clear", 1);
-  spawnJuice(pathBodies, gain, T.combo);
-  pathBodies.forEach(b => b.el.classList.add("clearing"));
+  spawnJuice(pathBodies, gain, T.combo, len);
+  hitStop = Math.min(0.16, 0.05 + len * 0.018); /* ヒットストップ： 世界が一瞬止まってから消える */
+  if (len >= 5) { const bd = $("board"); bd.classList.remove("boardShake"); void bd.offsetWidth; bd.classList.add("boardShake"); }
+  pathBodies.forEach(b => b.el.classList.add("clearing", "inpath", "ok")); /* 繋がったまま光って一緒に消える */
   updateTsumiPanel();
   T.settled = false;
   await sleep(330);
@@ -1095,12 +1152,14 @@ async function clearWord(pathBodies) {
   for (const b of pathBodies) b.el.remove();
   T.bodies = T.bodies.filter(b => !pathBodies.includes(b));
   for (const b of T.bodies) { b.sleep = false; b.rest = 0; }
-  T.spawnQueue = pathBodies.map(() => ({ mora: pickMoraFreq(), x: 2.1 + Math.random() * 3.8 }));
+  /* 補充は上書きせず積む（連続消去で前の補充が消えてブロック数が減るのを防ぐ） */
+  for (let i = 0; i < pathBodies.length; i++) T.spawnQueue.push({ mora: pickMoraFreq(), x: 2.1 + Math.random() * 3.8 });
   T.spawnT = 0; T.simT = 0; T.rainEnd = null;
 }
 function tsumiFinish() {
   if (!T || T.over) return;
   T.over = true;
+  if (T.queue) { for (const q of T.queue) q.path.forEach(b => { if (b.el) b.el.classList.remove("reserved"); }); T.queue = []; }
   T.path = [];
   updateTraceUI();
   const isBest = T.score > (SAVE.best2 || 0);
@@ -1119,8 +1178,10 @@ function pointerUnits(e) {
 }
 let lastTraceP = null;
 function nearestBody(fx, fy) {
+  const skip = reservedBodies();
   let best = null, bestD = CONNECT_D;
   for (const b of T.bodies) {
+    if (skip.has(b)) continue;
     const d = Math.hypot(fx - b.x, fy - b.y);
     if (d < bestD) { bestD = d; best = b; }
   }
@@ -1141,7 +1202,8 @@ function tryConnectBody(fx, fy) {
   }
 }
 function tsumiPointer(e, phase) {
-  if (!T || T.over || !T.settled) return;
+  /* 静止を待たずになぞれる（先行入力）。タイマー開始前（初回の落下中）だけ不可 */
+  if (!T || T.over || !T.started) return;
   if (phase === "down") {
     const p = pointerUnits(e);
     lastTraceP = p;
@@ -1168,7 +1230,7 @@ function tsumiPointer(e, phase) {
     T.path = [];
     if (path.length >= 2) {
       const str = path.map(b => b.mora).join("");
-      if (WORDSET.has(str)) { updateTraceUI(); clearWord(path); return; }
+      if (WORDSET.has(str)) { updateTraceUI(); submitWord(path); return; }
     }
     updateTraceUI();
   }
@@ -1176,7 +1238,8 @@ function tsumiPointer(e, phase) {
 
 let lastT = 0;
 function loop(t) {
-  const dt = Math.min(0.05, (t - lastT) / 1000 || 0); lastT = t;
+  let dt = Math.min(0.05, (t - lastT) / 1000 || 0); lastT = t;
+  if (hitStop > 0) { hitStop -= dt; dt = 0; }
   if (T && !T.over && T.started && $("game").classList.contains("active")) {
     T.left -= dt;
     const sec = Math.max(0, Math.ceil(T.left));

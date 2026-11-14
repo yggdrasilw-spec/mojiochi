@@ -3,7 +3,8 @@
 "use strict";
 class El {
   constructor(tag) {
-    this.tagName = (tag || "div").toUpperCase(); this.children = []; this.style = {}; this.dataset = {};
+    this.tagName = (tag || "div").toUpperCase(); this.children = []; this.dataset = {};
+    this.style = { setProperty(k, v) { this[k] = v; } };
     this._cls = new Set(); this._html = ""; this.textContent = ""; this.parentNode = null;
     const self = this;
     this.classList = {
@@ -240,6 +241,38 @@ global.speechSynthesis = { cancel() {}, speak() {} };
     ok(T.path.length === 3, "trace backtracks");
     tryConnectBody(6.5, 0.8);
     ok(T.path.length === 3, "trace ignores far bodies");
+    T = null;
+  }
+  /* ===== 先行入力（予約キュー）： 静止を待たず、どんどん連続で消せる ===== */
+  {
+    T = { bodies: [mkB("り", 0.5, 3), mkB("ん", 1.45, 3), mkB("ご", 2.4, 3), mkB("あ", 5.5, 3), mkB("め", 6.45, 3)],
+          path: [], score: 0, words: 0, maxChain: 0, left: 90, over: false, settled: false,
+          started: true, lastWords: [], lastShownSec: 99, shakes: 3, spawnQueue: [], spawnT: 0, simT: 0,
+          rainEnd: null, combo: 0, lastClearAt: 0, queue: [], busy: false, executing: null };
+    const w1 = T.bodies.slice(0, 3), w2 = T.bodies.slice(3);
+    submitWord(w1);
+    ok(T.busy && T.words === 1, "queue: first word executes immediately without waiting for settle");
+    ok(hitStop > 0, "hitstop: world freezes briefly on clear");
+    submitWord(w2);
+    ok(T.queue.length === 1, "queue: second word is reserved while first is clearing");
+    ok(w2[0].el.classList.contains("reserved"), "queue: reserved word is highlighted");
+    T.path = [];
+    tryConnectBody(5.5, 3);
+    ok(T.path.length === 0, "queue: reserved bodies cannot be traced again");
+    await new Promise(r => setTimeout(r, 1300));
+    ok(T.words === 2 && T.queue.length === 0 && !T.busy, "queue: reserved word clears consecutively");
+    ok(T.spawnQueue.length === 5, "queue: replacements accumulate (3+2, not overwritten): " + T.spawnQueue.length);
+    T = null;
+  }
+  /* ===== 長い単語のボーナス： 5モーラ「あさごはん」は 250+120=370点 ===== */
+  {
+    T = { bodies: [mkB("あ", 0.5, 3), mkB("さ", 1.45, 3), mkB("ご", 2.4, 3), mkB("は", 3.35, 3), mkB("ん", 4.3, 3)],
+          path: [], score: 0, words: 0, maxChain: 0, left: 90, over: false, settled: true,
+          started: true, lastWords: [], lastShownSec: 99, shakes: 3, spawnQueue: [], spawnT: 0, simT: 0,
+          rainEnd: null, combo: 0, lastClearAt: 0, queue: [], busy: false, executing: null };
+    submitWord(T.bodies.slice());
+    ok(T.score === 370, "long word bonus: 5-mora word scores 370 (got " + T.score + ")");
+    await new Promise(r => setTimeout(r, 500));
     T = null;
   }
   /* ===== フルシミュレーション： ぱらぱら落ちて静止し、単語が保証される ===== */
