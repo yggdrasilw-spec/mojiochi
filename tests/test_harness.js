@@ -128,6 +128,14 @@ global.speechSynthesis = { cancel() {}, speak() {} };
   ms = findWords(g);
   ok(ms.length === 1 && ms[0].reading === "いぬ", "cross sharing: only one word claims the shared cell: " +
      JSON.stringify(ms.map(m => m.reading)));
+  // 斜め（左上→右下）も検出する
+  g = gridWith([[8, 0, "り"], [9, 1, "ん"], [10, 2, "ご"]]);
+  ms = findWords(g);
+  ok(ms.length === 1 && ms[0].reading === "りんご" && ms[0].diag === true && ms[0].cells.length === 3,
+     "diagonal (top-left to bottom-right) word detected: " + JSON.stringify(ms.map(m => m.reading)));
+  // 逆向きの斜め（右上→左下の並び）は検出しない
+  g = gridWith([[10, 0, "り"], [9, 1, "ん"], [8, 2, "ご"]]);
+  ok(findWords(g).length === 0, "anti-diagonal not detected");
   // 拗音は1セル=1モーラとして並ぶ
   g = gridWith([[10, 0, "きゅ"], [10, 1, "う"], [10, 2, "り"]]);
   ms = findWords(g);
@@ -154,6 +162,9 @@ global.speechSynthesis = { cancel() {}, speak() {} };
   // 縦の断片（り・ん が縦に積まれた）からも「ご」が候補になる
   const w4 = computeWanted(gridWith([[8, 0, "り"], [9, 0, "ん"]]));
   ok(w4.has("ご"), "vertical assist wants ご for vertical りん_: " + [...w4].join(","));
+  // 斜めの断片（り・ん が左上→右下に並んだ）からも「ご」が候補になる
+  const w5 = computeWanted(gridWith([[8, 0, "り"], [9, 1, "ん"]]));
+  ok(w5.has("ご"), "diagonal assist wants ご for diagonal りん_: " + [...w5].join(","));
   // スポーン分布： 頻出モーラがちゃんと出る＆全て辞書内のモーラ
   const counts = {};
   for (let i = 0; i < 4000; i++) { const mo = pickMoraFreq(); counts[mo] = (counts[mo] || 0) + 1; if (!MORA_FREQ.has(mo)) { ok(false, "spawn unknown mora " + mo); break; } }

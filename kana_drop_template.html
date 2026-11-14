@@ -512,10 +512,22 @@ function segmentsInCol(grid, c) {
   if (cur) segs.push(cur);
   return segs;
 }
-/* 単語検出： 横（左→右）も縦（上→下）も拾う。最長一致優先で、セルを共有する候補は片方だけ採用 */
+/* 左上→右下（↘）の斜めの並び。d = c - r が同じセル同士が1本の斜め線になる */
+function segmentsInDiag(grid, d) {
+  const segs = []; let cur = null;
+  for (let r = Math.max(0, -d); r < ROWS && r + d < COLS; r++) {
+    const c = r + d;
+    if (grid[r][c]) { if (!cur) cur = { startR: r, startC: c, units: [] }; cur.units.push(grid[r][c]); }
+    else if (cur) { segs.push(cur); cur = null; }
+  }
+  if (cur) segs.push(cur);
+  return segs;
+}
+/* 単語検出： 横（左→右）・縦（上→下）・斜め（左上→右下）の3方向を拾う。
+   最長一致優先で、セルを共有する候補は片方だけ採用。同点は横→縦→斜めの順 */
 function findWords(grid) {
   const all = [];
-  const scan = (units, cellAt, vert) => {
+  const scan = (units, cellAt, dir) => {
     const n = units.length;
     for (let i = 0; i < n; i++) {
       let s = "";
@@ -524,14 +536,16 @@ function findWords(grid) {
         if (L >= 2 && WORDSET.has(s)) {
           const cells = [];
           for (let k = 0; k < L; k++) cells.push(cellAt(i + k));
-          all.push({ len: L, reading: s, cells, row: cells[0][0], start: cells[0][1], vert });
+          all.push({ len: L, reading: s, cells, row: cells[0][0], start: cells[0][1],
+                     vert: dir === 1, diag: dir === 2, dir });
         }
       }
     }
   };
-  for (let r = 0; r < ROWS; r++) for (const seg of segmentsInRow(grid, r)) scan(seg.units, k => [r, seg.start + k], false);
-  for (let c = 0; c < COLS; c++) for (const seg of segmentsInCol(grid, c)) scan(seg.units, k => [seg.start + k, c], true);
-  all.sort((a, b) => b.len - a.len || (a.vert ? 1 : 0) - (b.vert ? 1 : 0) || a.row - b.row || a.start - b.start);
+  for (let r = 0; r < ROWS; r++) for (const seg of segmentsInRow(grid, r)) scan(seg.units, k => [r, seg.start + k], 0);
+  for (let c = 0; c < COLS; c++) for (const seg of segmentsInCol(grid, c)) scan(seg.units, k => [seg.start + k, c], 1);
+  for (let d = -(ROWS - 1); d < COLS; d++) for (const seg of segmentsInDiag(grid, d)) scan(seg.units, k => [seg.startR + k, seg.startC + k], 2);
+  all.sort((a, b) => b.len - a.len || a.dir - b.dir || a.row - b.row || a.start - b.start);
   const used = new Set(), picked = [];
   for (const m of all) {
     if (m.cells.some(([r, c]) => used.has(r + ":" + c))) continue;
@@ -567,6 +581,7 @@ function computeWanted(grid, rows) {
   };
   for (let r = 0; r < (rows || ROWS); r++) for (const seg of segmentsInRow(grid, r)) fromUnits(seg.units);
   for (let c = 0; c < COLS; c++) for (const seg of segmentsInCol(grid, c)) fromUnits(seg.units);
+  for (let d = -(ROWS - 1); d < COLS; d++) for (const seg of segmentsInDiag(grid, d)) fromUnits(seg.units);
   return wanted;
 }
 function pickMoraFreq() {
@@ -741,7 +756,7 @@ function spawnGridJuice(matches, chain) {
     pop.className = "scorePop";
     pop.style.left = cx + "px"; pop.style.top = cy + "px";
     pop.style.fontSize = Math.round(CS * (m.len >= 5 ? 0.9 : 0.62)) + "px";
-    pop.textContent = "+" + (m.len * m.len * 10 * chain) + (m.vert ? " たて！" : "");
+    pop.textContent = "+" + (m.len * m.len * 10 * chain) + (m.vert ? " たて！" : m.diag ? " ななめ！" : "");
     board.appendChild(pop);
     setTimeout(() => pop.remove(), 900);
   }
@@ -861,6 +876,7 @@ function markOneAway() {
     };
     for (let r = 0; r < ROWS; r++) for (const seg of segmentsInRow(G.grid, r)) scanSeg(seg.units, k => [r, seg.start + k]);
     for (let c = 0; c < COLS; c++) for (const seg of segmentsInCol(G.grid, c)) scanSeg(seg.units, k => [seg.start + k, c]);
+    for (let d = -(ROWS - 1); d < COLS; d++) for (const seg of segmentsInDiag(G.grid, d)) scanSeg(seg.units, k => [seg.startR + k, seg.startC + k]);
   }
   settledEls.forEach(el => el.classList.toggle("oneaway", wantedSegs.has(el.dataset.r + ":" + el.dataset.c)));
 }
