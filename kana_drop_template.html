@@ -239,7 +239,7 @@
 "use strict";
 /* ===== パラメーター（調整はここだけ） ===== */
 const PARAMS = { cols: 8, rows: 11, baseSpeed: 1.7, speedPerWord: 0.05, maxSpeed: 6.5,
-                 softDropX: 9, lockDelay: 0.42, assistP: 0.38, cellLand: 54, cellPort: 74, shakes: 3 };
+                 softDropX: 9, lockDelay: 0.42, cellLand: 54, cellPort: 74, shakes: 3 };
 const DICT = /*__DICT__*/[];
 </script>
 <script>
@@ -269,6 +269,7 @@ for (const [r, w, m] of DICT) {
   }
 }
 const FREQ_LIST = [...MORA_FREQ.entries()];
+const MORA_UNIFORM = FREQ_LIST.map(([mo]) => mo); /* 落ちものの出現候補（全ユニット一様） */
 const FREQ_TOTAL = FREQ_LIST.reduce((a, [, n]) => a + n, 0);
 /* 全単語の接頭辞集合（なぞり探索の枝刈り用） */
 const PREFIX_SET = new Set();
@@ -589,13 +590,11 @@ function pickMoraFreq() {
   for (const [mo, n] of FREQ_LIST) { x -= n; if (x <= 0) return mo; }
   return "あ";
 }
+/* 落ちものの出現は完全な一様ランダム。頻出モーラへの寄せも、繋がりやすくする
+   出現アシストもしない（意図せず単語ができすぎるという本人の指摘による）。
+   頻出寄せの pickMoraFreq は、もじつみ側の出現でのみ使い続ける */
 function pickMora(grid) {
-  const wanted = computeWanted(grid);
-  if (wanted.size && Math.random() < PARAMS.assistP) {
-    const arr = [...wanted];
-    return arr[Math.floor(Math.random() * arr.length)];
-  }
-  return pickMoraFreq();
+  return MORA_UNIFORM[Math.floor(Math.random() * MORA_UNIFORM.length)];
 }
 
 /* ===== もじつみ用ロジック（テスト対象） ===== */

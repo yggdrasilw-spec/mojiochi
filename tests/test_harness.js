@@ -170,6 +170,13 @@ global.speechSynthesis = { cancel() {}, speak() {} };
   for (let i = 0; i < 4000; i++) { const mo = pickMoraFreq(); counts[mo] = (counts[mo] || 0) + 1; if (!MORA_FREQ.has(mo)) { ok(false, "spawn unknown mora " + mo); break; } }
   ok((counts["ん"] || 0) > 100, "spawn includes ん often: " + counts["ん"]);
   ok(Object.keys(counts).length > 60, "spawn variety " + Object.keys(counts).length);
+  // 落ちものの出現（pickMora）は一様ランダム：頻出モーラへの偏りがないこと
+  {
+    const cnt = {};
+    for (let i = 0; i < 20000; i++) { const mo = pickMora(newGrid()); cnt[mo] = (cnt[mo] || 0) + 1; }
+    ok((cnt["ん"] || 0) < 400, "falling spawn uniform: ん x" + (cnt["ん"] || 0) + "/20000 (weighted would be ~1000)");
+    ok(Object.keys(cnt).length >= MORA_UNIFORM.length - 2, "falling spawn covers all units: " + Object.keys(cnt).length + "/" + MORA_UNIFORM.length);
+  }
 
   /* ===== 色・行 ===== */
   ok(rowOfMora("きゅ") === "か", "row of digraph");
