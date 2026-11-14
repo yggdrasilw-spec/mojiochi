@@ -53,6 +53,8 @@
   .blk.inpath.ok { outline-color:#8ac926; }
   #traceBanner { position:absolute; left:50%; top:78px; transform:translateX(-50%); z-index:65; background:rgba(255,255,255,.95); border-radius:999px; padding:6px 30px; font-size:36px; font-weight:900; color:#26355d; letter-spacing:.14em; box-shadow:0 5px 0 rgba(38,53,93,.15); display:none; }
   #traceBanner.ok { color:#4d8f1f; }
+  #board.shaking { animation:boardShake .45s ease; }
+  @keyframes boardShake { 0%,100% { transform:translate(0,0); } 20% { transform:translate(-7px,3px) rotate(-.6deg); } 40% { transform:translate(6px,-3px); } 60% { transform:translate(-5px,-2px) rotate(.5deg); } 80% { transform:translate(4px,2px); } }
   #ghost { position:absolute; border-radius:12px; border:3px dashed rgba(38,53,93,.35); pointer-events:none; }
   #panel { width:330px; display:flex; flex-direction:column; gap:13px; }
   .pbox { background:rgba(255,255,255,.88); border-radius:18px; padding:12px 18px; box-shadow:0 5px 0 rgba(38,53,93,.1); }
@@ -67,7 +69,7 @@
   #lastWords .lw { border-top:2px dashed #d5dbe8; padding:5px 0; }
   #lastWords .lw:first-child { border-top:none; }
   #lastWords b { font-size:22px; }
-  #dropBtn { align-self:center; }
+  #dropBtn, #shakeBtn { align-self:center; }
   #wordToast { position:absolute; left:50%; top:110px; transform:translateX(-50%); z-index:70; background:rgba(255,255,255,.96); border-radius:22px; padding:14px 34px; box-shadow:0 8px 0 rgba(38,53,93,.18); text-align:center; display:none; max-width:900px; }
   #wordToast .tw { font-size:52px; font-weight:900; color:#26355d; letter-spacing:.06em; }
   #wordToast .tm { font-size:22px; font-weight:800; color:#47608f; margin-top:2px; }
@@ -178,6 +180,7 @@
         <div class="pbox" id="missionBox" style="display:none"><div class="ptitle">お題</div><div id="missionList"></div></div>
         <div class="pbox"><div class="ptitle">つくった ことば</div><div id="lastWords"><div class="lw">まだ ないよ</div></div></div>
         <button id="dropBtn" class="bigbtn blue small">⬇ おとす</button>
+        <button id="shakeBtn" class="bigbtn small" style="display:none; background:linear-gradient(180deg,#ffb703,#fb8500); box-shadow:0 6px 0 #b35c00;">ゆらす</button>
       </div>
     </div>
     <div id="wordToast"><div class="tw"></div><div class="tm"></div><div class="ts"></div></div>
@@ -210,7 +213,7 @@
 "use strict";
 /* ===== パラメーター（調整はここだけ） ===== */
 const PARAMS = { cols: 8, rows: 11, baseSpeed: 1.7, speedPerWord: 0.05, maxSpeed: 6.5,
-                 softDropX: 9, lockDelay: 0.42, assistP: 0.38, cellLand: 54, cellPort: 58 };
+                 softDropX: 9, lockDelay: 0.42, assistP: 0.38, cellLand: 54, cellPort: 58, shakes: 3 };
 const DICT = /*__DICT__*/[];
 </script>
 <script>
@@ -290,6 +293,7 @@ function sfx(name, opt) {
   else if (name === "clear") { const base = 523 * Math.pow(1.12, (opt || 1) - 1); [0, 4, 7, 12].forEach((s, i) => tone(base * Math.pow(2, s / 12), i * 0.055, 0.16, "triangle", 0.15)); }
   else if (name === "over") { [440, 349, 262, 196].forEach((f, i) => tone(f, i * 0.13, 0.2, "sawtooth", 0.07)); }
   else if (name === "select") { tone(660, 0, 0.06, "sine", 0.1); }
+  else if (name === "shake") { [0, 70, 140, 210, 280, 350].forEach((ms, i) => tone(i % 2 ? 190 : 150, ms / 1000, 0.05, "square", 0.06)); }
 }
 function speak(text) {
   if (!settings.tts || !("speechSynthesis" in window)) return;
@@ -557,6 +561,24 @@ function countTraceable(grid, rows, cap) {
   }
   return found.size;
 }
+/* 盤面の文字（多重集合）を保ったまま並び替え、なぞれる単語が2つ以上ある並びを返す */
+function shuffledGrid(grid, rows) {
+  const vals = [];
+  for (let r = 0; r < rows; r++) for (let c = 0; c < COLS; c++) if (grid[r][c]) vals.push(grid[r][c]);
+  let best = null, bestTr = -1;
+  for (let attempt = 0; attempt < 12; attempt++) {
+    const a = [...vals];
+    for (let i = a.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      const t = a[i]; a[i] = a[j]; a[j] = t;
+    }
+    const g = Array.from({ length: rows }, (_, r) => a.slice(r * COLS, (r + 1) * COLS));
+    const tr = countTraceable(g, rows, 2);
+    if (tr > bestTr) { bestTr = tr; best = g; }
+    if (tr >= 2) return g;
+  }
+  return best;
+}
 /* 初期盤面： 列にできている単語は少なめ（自動で溶けない）、でもなぞれる単語は必ずある */
 function genTsumiBoard() {
   let best = null, bestScore = -1e9;
@@ -582,6 +604,7 @@ function startGame(mode) {
   $("timerVal").style.display = "none";
   $("nextBox").style.display = "";
   $("dropBtn").style.display = "";
+  $("shakeBtn").style.display = "none";
   G = { mode, grid: newGrid(), falling: null, queue: [pickMoraFreq(), pickMoraFreq()],
         score: 0, words: 0, moraCleared: 0, maxChain: 0, resolving: false, over: false,
         soft: false, targetCol: 3, lastWords: [], missions: mode === "mission" ? genMissions() : null,
@@ -763,7 +786,7 @@ function startTsumi() {
   curMode = "tsumi";
   G = null;
   T = { grid: genTsumiBoard(), path: [], score: 0, words: 0, maxChain: 0, left: 60,
-        over: false, resolving: false, lastWords: [], lastShownSec: 99 };
+        over: false, resolving: false, lastWords: [], lastShownSec: 99, shakes: PARAMS.shakes, shaking: false };
   BOARD_ROWS = TROWS;
   $("gameTitle").textContent = "もじつみ";
   $("gameMode").textContent = "🧩 もじを なぞって ことばを つくろう";
@@ -771,6 +794,8 @@ function startTsumi() {
   $("timerVal").textContent = "⏱ 60";
   $("nextBox").style.display = "none";
   $("dropBtn").style.display = "none";
+  $("shakeBtn").style.display = "";
+  updateShakeBtn();
   $("missionBox").style.display = "none";
   showScreen("game");
   layoutBoard();
@@ -808,6 +833,29 @@ function updateTraceUI() {
     el.classList.toggle("inpath", on);
     el.classList.toggle("ok", on && isWord);
   });
+}
+function updateShakeBtn() {
+  const b = $("shakeBtn");
+  if (!T) return;
+  b.textContent = "ゆらす（あと" + T.shakes + "回）";
+  b.style.opacity = T.shakes > 0 ? "1" : "0.45";
+}
+/* つながりが見つからないときの救済： 盤面を揺らして文字の並びだけを入れ替える */
+async function shakeField() {
+  if (!T || T.over || T.resolving || T.shaking || T.shakes <= 0) return;
+  T.shakes--;
+  T.shaking = true;
+  T.path = [];
+  traceActive = false;
+  updateTraceUI();
+  updateShakeBtn();
+  sfx("shake");
+  $("board").classList.add("shaking");
+  await sleep(460);
+  T.grid = shuffledGrid(T.grid, TROWS);
+  renderTsumi();
+  $("board").classList.remove("shaking");
+  T.shaking = false;
 }
 function flashTrace(text) {
   const b = $("traceBanner");
@@ -907,7 +955,7 @@ function cellFromEvent(e) {
   return [r, c];
 }
 function tsumiPointer(e, phase) {
-  if (!T || T.over) return;
+  if (!T || T.over || T.shaking) return;
   if (phase === "down") {
     if (T.resolving) return;
     const cell = cellFromEvent(e);
@@ -1044,6 +1092,7 @@ function init() {
   $("ovRetry").addEventListener("click", () => { sfx("select"); $("overOv").classList.remove("active"); startGame(curMode); });
   $("ovCover").addEventListener("click", () => { sfx("select"); $("overOv").classList.remove("active"); showScreen("cover"); });
   $("dropBtn").addEventListener("click", () => hardDrop());
+  $("shakeBtn").addEventListener("click", () => shakeField());
   const gs = $("game");
   gs.addEventListener("pointerdown", e => { gamePointer(e, "down"); if (pDown && gs.setPointerCapture) { try { gs.setPointerCapture(e.pointerId); } catch (err) {} } });
   gs.addEventListener("pointermove", e => gamePointer(e, "move"));

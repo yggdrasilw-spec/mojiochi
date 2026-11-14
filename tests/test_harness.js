@@ -229,6 +229,21 @@ global.speechSynthesis = { cancel() {}, speak() {} };
     }
   }
 
+  /* ===== ゆらす（シャッフル）の検証 ===== */
+  {
+    const src = genTsumiBoard();
+    const multiset = g => g.flat().filter(Boolean).sort().join(",");
+    const before = multiset(src);
+    let changed = 0;
+    for (let i = 0; i < 5; i++) {
+      const sh = shuffledGrid(src, TROWS);
+      ok(multiset(sh) === before, "shuffle preserves multiset " + i);
+      ok(countTraceable(sh, TROWS, 2) >= 2, "shuffle keeps >=2 traceable " + i);
+      if (sh.flat().join() !== src.flat().join()) changed++;
+    }
+    ok(changed >= 4, "shuffle actually rearranges (" + changed + "/5)");
+  }
+
   console.log("\n=== RESULT: pass=" + pass + " fail=" + fail + " ===");
   if (fails.length) console.log(fails.slice(0, 20).join("\n"));
 })();
