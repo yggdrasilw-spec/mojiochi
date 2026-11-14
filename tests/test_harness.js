@@ -253,6 +253,9 @@ global.speechSynthesis = { cancel() {}, speak() {} };
     ok(outside === 0, "all bodies rest inside the curved field (" + outside + ")");
     ok(countTraceableGraph(T.bodies, 2) >= 2, "settled board guarantees traceable words");
     ok(T.started, "timer starts after settle");
+    let floating = 0;
+    for (const b of T.bodies) if (!bodySupported(b, T.bodies)) floating++;
+    ok(floating === 0, "no body floats in mid-air (" + floating + ")");
     console.log("tsumi sim: settled in " + (frames / 60).toFixed(2) + "s");
     // ゆらす： 投げ上げて再静止すること
     shakeField();

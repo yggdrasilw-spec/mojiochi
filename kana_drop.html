@@ -833,7 +833,7 @@ function startTsumi() {
   document.querySelectorAll("#board .blk").forEach(e => e.remove());
   T = { bodies: [], path: [], score: 0, words: 0, maxChain: 0, left: 60,
         over: false, settled: false, started: false, lastWords: [], lastShownSec: 99,
-        shakes: PARAMS.shakes, spawnQueue: [], spawnT: 0, simT: 0 };
+        shakes: PARAMS.shakes, spawnQueue: [], spawnT: 0, simT: 0, rainEnd: null };
   $("gameTitle").textContent = "もじつみ";
   $("gameMode").textContent = "🧩 もじを なぞって ことばを つくろう";
   $("timerVal").style.display = "";
@@ -897,7 +897,7 @@ function shakeField() {
     b.vx = (Math.random() - 0.5) * 9;
     b.vy = -(3.5 + Math.random() * 4.5);
   }
-  T.settled = false; T.simT = 0;
+  T.settled = false; T.simT = 0; T.rainEnd = 0;
 }
 /* 曲線フィールド境界との衝突（符号付き距離の勾配方向へ押し戻し、法線速度を弾性で反射） */
 function collideField(b) {
@@ -919,6 +919,20 @@ function collideField(b) {
     b.vx *= 0.92; b.vy *= 0.92;
   }
 }
+/* ブロックが下に支えられているか（フィールドの底・壁の曲面に触れている、または下に別のブロックがある）。
+   支えのないブロックは低速でも眠らせない（空中で静止してしまうのを防ぐ） */
+function bodySupported(b, bodies) {
+  if (sdField(b.x, b.y) > -TRAD - 0.06) return true;
+  let near = 0;
+  for (const o of bodies) {
+    if (o === b) continue;
+    const dy = o.y - b.y;
+    const d = Math.hypot(o.x - b.x, dy);
+    if (dy > 0.25 && d < TRAD * 2 * 1.1) return true;
+    if (d < TRAD * 2 * 1.05) near++;
+  }
+  return near >= 2; /* 両側から挟まれて楔止めされている場合も支えとみなす */
+}
 /* 物理シミュレーション： 低重力＋弾性。ぱらぱら落下、跳ね、積もり、静止までを担う */
 function stepTsumi(dt) {
   if (!T || T.over) return;
@@ -932,9 +946,11 @@ function stepTsumi(dt) {
       T.bodies.push(b);
     }
   }
+  if (!T.spawnQueue.length && T.rainEnd == null) T.rainEnd = T.simT;
   if (T.settled) return;
   T.simT += dt;
-  const calm = T.simT > 0.9;
+  /* 落下中は減衰させない。全部落ちてから0.8秒後に「静まりフェーズ」に入る */
+  const calm = T.rainEnd != null && (T.simT - T.rainEnd > 0.8);
   const GRAV = 15 * (calm ? 0.25 : 1);
   for (let s = 0; s < 2; s++) {
     const h = dt / 2;
@@ -987,7 +1003,9 @@ function stepTsumi(dt) {
   let allSleep = T.bodies.length >= TBODIES;
   for (const b of T.bodies) {
     if (!b.sleep) {
-      if (Math.hypot(b.vx, b.vy) < 0.75) {
+      /* 落下し始めのうちは「支えがあること」を睡眠の条件にする。時間が経って全体が詰まった後は、低速なだけで眠ってよい */
+      const needSupport = T.rainEnd == null || (T.simT - T.rainEnd <= 3.5);
+      if (Math.hypot(b.vx, b.vy) < 0.75 && (!needSupport || bodySupported(b, T.bodies))) {
         b.rest += dt;
         if (b.rest >= 0.15) { b.sleep = true; b.vx = 0; b.vy = 0; }
       } else b.rest = 0;
@@ -996,7 +1014,7 @@ function stepTsumi(dt) {
     placeBodyEl(b);
   }
   const spawned = !T.spawnQueue.length && T.bodies.length >= TBODIES;
-  if (spawned && (allSleep || T.simT > 6)) onSettled();
+  if (spawned && (allSleep || T.simT > 9)) onSettled();
 }
 function onSettled() {
   letterFix(T.bodies);
@@ -1026,7 +1044,7 @@ async function clearWord(pathBodies) {
   T.bodies = T.bodies.filter(b => !pathBodies.includes(b));
   for (const b of T.bodies) { b.sleep = false; b.rest = 0; }
   T.spawnQueue = pathBodies.map(() => ({ mora: pickMoraFreq(), x: 2.1 + Math.random() * 3.8 }));
-  T.spawnT = 0; T.simT = 0;
+  T.spawnT = 0; T.simT = 0; T.rainEnd = null;
 }
 function tsumiFinish() {
   if (!T || T.over) return;
