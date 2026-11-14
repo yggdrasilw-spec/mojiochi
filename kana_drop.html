@@ -47,7 +47,8 @@
   .blk { position:absolute; display:flex; align-items:center; justify-content:center; font-weight:900; color:#26355d; border-radius:12px; box-shadow:inset 0 -5px 0 rgba(38,53,93,.15), 0 3px 0 rgba(38,53,93,.18); will-change:transform; }
   .blk.falling { box-shadow:inset 0 -5px 0 rgba(38,53,93,.15), 0 6px 10px rgba(38,53,93,.3); outline:3px solid rgba(255,255,255,.85); }
   .blk.clearing { animation:blkPop .32s ease forwards; }
-  @keyframes blkPop { 40% { transform:scale(1.25); filter:brightness(1.35); } 100% { transform:scale(0); opacity:0; } }
+  /* transformではなくscaleプロパティで膨らませる（transformだと配置用のtranslateが上書きされ、ブロックが左上へズレながら消える） */
+  @keyframes blkPop { 40% { scale:1.25; filter:brightness(1.35); } 100% { scale:0; opacity:0; } }
   .blk.oneaway { outline:3px dashed #ff8c42; outline-offset:-3px; }
   .blk.inpath { outline:4px solid #fff; outline-offset:-2px; filter:brightness(1.18); z-index:3; }
   .blk.inpath.ok { outline-color:#8ac926; }
@@ -66,8 +67,9 @@
   .blk { transition:scale .12s ease; }
   .blk.inpath { scale:1.13; }
   .blk.reserved { outline:4px dashed #ffb703; outline-offset:-3px; filter:brightness(1.12); }
-  #board.boardShake { animation:bShake .18s linear; }
-  @keyframes bShake { 25% { transform:translate(3px,-2px); } 50% { transform:translate(-3px,2px); } 75% { transform:translate(2px,1px); } }
+  /* 盤面はズラさない。長い単語の消去では明るく光らせる */
+  #board.glowPulse { animation:glowP .3s ease; }
+  @keyframes glowP { 30% { filter:brightness(1.16) saturate(1.25); } }
   .part { position:absolute; border-radius:50%; pointer-events:none; z-index:8; animation:partFly .55s ease-out forwards; }
   @keyframes partFly { to { transform:translate(var(--dx), var(--dy)) scale(.2); opacity:0; } }
   .scorePop { position:absolute; z-index:9; pointer-events:none; font-weight:900; color:#ff8c42; text-shadow:0 2px 0 #fff, 0 4px 10px rgba(255,140,66,.45); transform:translate(-50%,-50%); animation:floatUp .85s ease-out forwards; white-space:nowrap; }
@@ -841,7 +843,7 @@ function makeBody(mora, x, y) {
   const el = document.createElement("div");
   el.className = "blk tsumiBlk";
   el.style.zIndex = 3;
-  const b = { mora, x, y, vx: 0, vy: 0, m: 0.8 + Math.random() * 0.6, sleep: false, rest: 0, el };
+  const b = { mora, x, y, vx: 0, vy: 0, m: 0.8 + Math.random() * 0.6, sleep: false, rest: 0, pin: false, el };
   setBodyMora(b, mora);
   placeBodyEl(b);
   $("board").appendChild(el);
@@ -914,6 +916,7 @@ function shakeField() {
   T.shakes--;
   /* 予約は取り消す（盤面が跳ねて並びが変わるため） */
   if (T.queue) { for (const q of T.queue) q.path.forEach(b => { if (b.el) b.el.classList.remove("reserved"); }); T.queue = []; }
+  for (const b of T.path) b.pin = false;
   T.path = [];
   traceActive = false;
   updateTraceUI();
@@ -983,7 +986,7 @@ function stepTsumi(dt) {
   for (let s = 0; s < 2; s++) {
     const h = dt / 2;
     for (const b of T.bodies) {
-      if (b.sleep) continue;
+      if (b.sleep || b.pin) continue; /* なぞり中のブロックは指の下で固定する（ズレない） */
       b.vy += GRAV * h;
       b.x += b.vx * h;
       b.y += b.vy * h;
@@ -1002,7 +1005,7 @@ function stepTsumi(dt) {
           if (a.sleep) { a.sleep = false; a.rest = 0; }
           if (b.sleep) { b.sleep = false; b.rest = 0; }
         }
-        const ima = a.sleep ? 0 : 1 / a.m, imb = b.sleep ? 0 : 1 / b.m;
+        const ima = (a.sleep || a.pin) ? 0 : 1 / a.m, imb = (b.sleep || b.pin) ? 0 : 1 / b.m;
         const isim = ima + imb;
         if (isim === 0) continue;
         a.x -= nx * overlap * (ima / isim); a.y -= ny * overlap * (ima / isim);
@@ -1021,8 +1024,8 @@ function stepTsumi(dt) {
         b.vx += jt * imb * tx; b.vy += jt * imb * ty;
       }
     }
-    /* 衝突の押し出しで境界にめり込んだブロックを、眠っているものも含めて必ず内側へ戻す */
-    for (const b of T.bodies) collideField(b);
+    /* 衝突の押し出しで境界にめり込んだブロックを、眠っているものも含めて必ず内側へ戻す（固定中は除く） */
+    for (const b of T.bodies) if (!b.pin) collideField(b);
   }
   if (calm) {
     const f = Math.pow(0.002, dt);
@@ -1143,7 +1146,7 @@ async function clearWord(pathBodies, atTime) {
   sfx("clear", 1);
   spawnJuice(pathBodies, gain, T.combo, len);
   hitStop = Math.min(0.16, 0.05 + len * 0.018); /* ヒットストップ： 世界が一瞬止まってから消える */
-  if (len >= 5) { const bd = $("board"); bd.classList.remove("boardShake"); void bd.offsetWidth; bd.classList.add("boardShake"); }
+  if (len >= 5) { const bd = $("board"); bd.classList.remove("glowPulse"); void bd.offsetWidth; bd.classList.add("glowPulse"); }
   pathBodies.forEach(b => b.el.classList.add("clearing", "inpath", "ok")); /* 繋がったまま光って一緒に消える */
   updateTsumiPanel();
   T.settled = false;
@@ -1160,6 +1163,7 @@ function tsumiFinish() {
   if (!T || T.over) return;
   T.over = true;
   if (T.queue) { for (const q of T.queue) q.path.forEach(b => { if (b.el) b.el.classList.remove("reserved"); }); T.queue = []; }
+  for (const b of T.path) b.pin = false;
   T.path = [];
   updateTraceUI();
   const isBest = T.score > (SAVE.best2 || 0);
@@ -1190,13 +1194,14 @@ function nearestBody(fx, fy) {
 function tryConnectBody(fx, fy) {
   const b = nearestBody(fx, fy);
   if (!b) return;
-  if (!T.path.length) { T.path = [b]; sfx("connect", { n: 1 }); updateTraceUI(); return; }
+  if (!T.path.length) { T.path = [b]; b.pin = true; sfx("connect", { n: 1 }); updateTraceUI(); return; }
   const last = T.path[T.path.length - 1];
   if (b === last) return;
   const prev = T.path[T.path.length - 2];
-  if (prev && b === prev) { T.path.pop(); updateTraceUI(); return; }
+  if (prev && b === prev) { const popped = T.path.pop(); if (popped) popped.pin = false; updateTraceUI(); return; }
   if (!T.path.includes(b) && Math.hypot(b.x - last.x, b.y - last.y) <= ADJ_D) {
     T.path.push(b);
+    b.pin = true;
     sfx("connect", { n: T.path.length }); /* 繋ぐたびに音階が上がる */
     updateTraceUI();
   }
@@ -1207,6 +1212,7 @@ function tsumiPointer(e, phase) {
   if (phase === "down") {
     const p = pointerUnits(e);
     lastTraceP = p;
+    for (const b of T.path) b.pin = false;
     T.path = [];
     traceActive = true;
     tryConnectBody(p.x, p.y);
@@ -1228,6 +1234,7 @@ function tsumiPointer(e, phase) {
     lastTraceP = null;
     const path = T.path;
     T.path = [];
+    for (const b of path) b.pin = false;
     if (path.length >= 2) {
       const str = path.map(b => b.mora).join("");
       if (WORDSET.has(str)) { updateTraceUI(); submitWord(path); return; }

@@ -294,6 +294,13 @@ global.speechSynthesis = { cancel() {}, speak() {} };
     // ゆらす： 投げ上げて再静止すること
     shakeField();
     ok(!T.settled && T.shakes === PARAMS.shakes - 1, "shake consumes one use and un-settles");
+    // なぞり中のブロックは、周りが動いていても指の下でズレないこと
+    const pb = T.bodies[0];
+    pb.pin = true;
+    const px = pb.x, py = pb.y;
+    for (let i = 0; i < 30; i++) stepTsumi(1 / 60);
+    ok(pb.x === px && pb.y === py, "pin: traced body does not drift while board moves");
+    pb.pin = false;
     frames = 0;
     while (T && !T.settled && frames < 1200) { stepTsumi(1 / 60); frames++; }
     ok(T.settled, "board re-settles after shake (" + frames + " frames)");
