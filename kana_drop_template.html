@@ -1121,6 +1121,7 @@ function tsumiPointer(e, phase) {
   }
 }
 
+let lastT = 0;
 function loop(t) {
   const dt = Math.min(0.05, (t - lastT) / 1000 || 0); lastT = t;
   if (T && !T.over && T.started && $("game").classList.contains("active")) {

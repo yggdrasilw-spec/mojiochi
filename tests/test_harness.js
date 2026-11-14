@@ -47,7 +47,8 @@ global.document = {
   addEventListener() {}
 };
 global.localStorage = { _m: {}, getItem(k) { return this._m[k] ?? null; }, setItem(k, v) { this._m[k] = String(v); }, removeItem(k) { delete this._m[k]; } };
-global.requestAnimationFrame = () => 0;
+global.__rafCb = null;
+global.requestAnimationFrame = cb => { global.__rafCb = cb; return 1; };
 global.addEventListener = () => {};
 global.performance = { now: () => 0 };
 class FakeCtx { constructor() { this.state = "running"; this.currentTime = 0; this.destination = {}; }
@@ -266,6 +267,30 @@ global.speechSynthesis = { cancel() {}, speak() {} };
     ok(countTraceableGraph(T.bodies, 2) >= 2, "words guaranteed after shake");
     console.log("tsumi shake sim: re-settled in " + (frames / 60).toFixed(2) + "s");
     T = null;
+  }
+
+  /* ===== 実ループ駆動のE2E（rAFループ自体が生きていること） ===== */
+  {
+    let vt = 0;
+    const runFrames = (n, dtMs = 16.7) => {
+      for (let i = 0; i < n; i++) {
+        const cb = global.__rafCb; global.__rafCb = null;
+        if (!cb) break;
+        vt += dtMs;
+        cb(vt);
+      }
+    };
+    startGame("tsumi");
+    runFrames(60);
+    ok(T && T.bodies.length > 0, "E2E: loop spawns tsumi bodies (" + (T ? T.bodies.length : "no T") + ")");
+    runFrames(600);
+    ok(T && T.settled, "E2E: loop settles the board");
+    ok(T && T.started && T.left < 60, "E2E: timer counts down (left=" + (T ? T.left.toFixed(1) : "?") + ")");
+    T = null;
+    startGame("endless");
+    runFrames(120);
+    ok(G && (!G.falling || G.falling.y > 0 || G.moraCleared > 0), "E2E: falling block falls via loop");
+    G = null;
   }
 
   console.log("\n=== RESULT: pass=" + pass + " fail=" + fail + " ===");
