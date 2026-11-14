@@ -285,7 +285,7 @@ global.speechSynthesis = { cancel() {}, speak() {} };
     ok(T && T.bodies.length > 0, "E2E: loop spawns tsumi bodies (" + (T ? T.bodies.length : "no T") + ")");
     runFrames(600);
     ok(T && T.settled, "E2E: loop settles the board");
-    ok(T && T.started && T.left < 60, "E2E: timer counts down (left=" + (T ? T.left.toFixed(1) : "?") + ")");
+    ok(T && T.started && T.left < TSUMI_TIME, "E2E: timer counts down (left=" + (T ? T.left.toFixed(1) : "?") + ")");
     T = null;
     startGame("endless");
     runFrames(120);

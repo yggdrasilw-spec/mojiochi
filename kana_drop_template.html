@@ -62,6 +62,17 @@
   .fieldShape rect { fill:rgba(255,255,255,.55); stroke:#8ecae6; stroke-width:.09; }
   #traceSvg { position:absolute; inset:0; width:100%; height:100%; z-index:5; pointer-events:none; }
   #traceLine { fill:none; stroke:#ff8fab; stroke-width:.16; stroke-linecap:round; stroke-linejoin:round; opacity:.85; }
+  /* 演出： なぞったブロックの膨らみ、消去パーティクル、スコアポップ、残り時間警告 */
+  .blk { transition:scale .12s ease; }
+  .blk.inpath { scale:1.13; }
+  .part { position:absolute; border-radius:50%; pointer-events:none; z-index:8; animation:partFly .55s ease-out forwards; }
+  @keyframes partFly { to { transform:translate(var(--dx), var(--dy)) scale(.2); opacity:0; } }
+  .scorePop { position:absolute; z-index:9; pointer-events:none; font-weight:900; color:#ff8c42; text-shadow:0 2px 0 #fff, 0 4px 10px rgba(255,140,66,.45); transform:translate(-50%,-50%); animation:floatUp .85s ease-out forwards; white-space:nowrap; }
+  @keyframes floatUp { 18% { transform:translate(-50%,-70%) scale(1.18); opacity:1; } 100% { transform:translate(-50%,-230%) scale(1); opacity:0; } }
+  #timerVal.urgent { display:inline-block; color:#e63946; animation:urgentPulse .5s ease-in-out infinite alternate; }
+  @keyframes urgentPulse { from { transform:scale(1); } to { transform:scale(1.22); } }
+  #scoreVal.bump { display:inline-block; animation:bumpA .3s ease; }
+  @keyframes bumpA { 35% { transform:scale(1.32); color:#ff8c42; } }
   #ghost { position:absolute; border-radius:12px; border:3px dashed rgba(38,53,93,.35); pointer-events:none; }
   #panel { width:330px; display:flex; flex-direction:column; gap:13px; }
   .pbox { background:rgba(255,255,255,.88); border-radius:18px; padding:12px 18px; box-shadow:0 5px 0 rgba(38,53,93,.1); }
@@ -159,7 +170,7 @@
     <div class="coverBtns">
       <button id="startEndless" class="bigbtn">▶ エンドレス</button>
       <button id="startMission" class="bigbtn blue">🎯 お題ミッション</button>
-      <button id="startTsumi" class="bigbtn" style="background:linear-gradient(180deg,#b388ff,#7c4dff); box-shadow:0 7px 0 #5e35b1;">🧩 もじつみ（60びょう）</button>
+      <button id="startTsumi" class="bigbtn" style="background:linear-gradient(180deg,#b388ff,#7c4dff); box-shadow:0 7px 0 #5e35b1;">🧩 もじつみ（90びょう）</button>
       <button id="openZukan" class="bigbtn green">📖 ことばずかん</button>
     </div>
     <div id="coverInfo">つくった ことば： 0こ</div>
@@ -220,7 +231,7 @@
 "use strict";
 /* ===== パラメーター（調整はここだけ） ===== */
 const PARAMS = { cols: 8, rows: 11, baseSpeed: 1.7, speedPerWord: 0.05, maxSpeed: 6.5,
-                 softDropX: 9, lockDelay: 0.42, assistP: 0.38, cellLand: 54, cellPort: 58, shakes: 3 };
+                 softDropX: 9, lockDelay: 0.42, assistP: 0.38, cellLand: 54, cellPort: 74, shakes: 3 };
 const DICT = /*__DICT__*/[];
 </script>
 <script>
@@ -301,6 +312,8 @@ function sfx(name, opt) {
   else if (name === "over") { [440, 349, 262, 196].forEach((f, i) => tone(f, i * 0.13, 0.2, "sawtooth", 0.07)); }
   else if (name === "select") { tone(660, 0, 0.06, "sine", 0.1); }
   else if (name === "shake") { [0, 70, 140, 210, 280, 350].forEach((ms, i) => tone(i % 2 ? 190 : 150, ms / 1000, 0.05, "square", 0.06)); }
+  else if (name === "connect") { const n = opt && opt.n ? opt.n : 1; tone(420 + n * 60, 0, 0.08, "triangle", 0.10); }
+  else if (name === "count") { tone(920, 0, 0.09, "square", 0.07); }
 }
 function speak(text) {
   if (!settings.tts || !("speechSynthesis" in window)) return;
@@ -529,6 +542,7 @@ const TH = 7.5;          // フィールド高さ（単位）
 const TRAD = 0.46;       // ブロック半径（単位）
 const TFIELD_R = 2.2;    // フィールドの角の丸み（単位）＝思い切った曲線
 const TBODIES = 28;      // ブロック数（フィールドの半分くらい。詰まりすぎない量）
+const TSUMI_TIME = 90;   // 制限時間（秒）
 const ADJ_D = TRAD * 2 * 1.5;  // これより近ければ「つながっている」とみなす中心間距離
 const CONNECT_D = 0.95;  // 指がこの距離まで近づけばブロックを掴む
 /* 角丸矩形の符号付き距離（内側が負）。フィールド境界との衝突に使う */
@@ -833,13 +847,14 @@ function startTsumi() {
   curMode = "tsumi";
   G = null;
   document.querySelectorAll("#board .blk").forEach(e => e.remove());
-  T = { bodies: [], path: [], score: 0, words: 0, maxChain: 0, left: 60,
+  T = { bodies: [], path: [], score: 0, words: 0, maxChain: 0, left: TSUMI_TIME,
         over: false, settled: false, started: false, lastWords: [], lastShownSec: 99,
-        shakes: PARAMS.shakes, spawnQueue: [], spawnT: 0, simT: 0, rainEnd: null };
+        shakes: PARAMS.shakes, spawnQueue: [], spawnT: 0, simT: 0, rainEnd: null, combo: 0, lastClearAt: 0 };
   $("gameTitle").textContent = "もじつみ";
   $("gameMode").textContent = "🧩 もじを なぞって ことばを つくろう";
   $("timerVal").style.display = "";
-  $("timerVal").textContent = "⏱ 60";
+  $("timerVal").textContent = "⏱ " + TSUMI_TIME;
+  $("timerVal").classList.remove("urgent");
   $("nextBox").style.display = "none";
   $("dropBtn").style.display = "none";
   $("board").classList.add("tsumiField");
@@ -855,8 +870,10 @@ function startTsumi() {
   updateTsumiPanel();
 }
 function updateTsumiPanel() {
-  $("scoreVal").textContent = T.score;
-  $("statLine").textContent = "ことば " + T.words + "こ";
+  const sv = $("scoreVal");
+  sv.textContent = T.score;
+  sv.classList.remove("bump"); void sv.offsetWidth; sv.classList.add("bump");
+  $("statLine").textContent = "ことば " + T.words + "こ" + (T.combo >= 2 ? " ／ コンボ×" + T.combo : "");
   $("lastWords").innerHTML = T.lastWords.length
     ? T.lastWords.map(l => '<div class="lw"><b>' + l.w + "</b>（" + l.reading + "） +" + l.gain + "<br>" + l.m + "</div>").join("")
     : '<div class="lw">まだ ないよ</div>';
@@ -1023,11 +1040,43 @@ function onSettled() {
   T.settled = true;
   T.started = true;
 }
+/* 演出： 消去位置から粒子を飛ばし、スコアポップを浮かせる */
+function spawnJuice(pathBodies, gain, combo) {
+  const board = $("board");
+  if (!board) return;
+  let cx = 0, cy = 0;
+  for (const b of pathBodies) {
+    cx += b.x; cy += b.y;
+    for (let i = 0; i < 7; i++) {
+      const p = document.createElement("div");
+      p.className = "part";
+      const sz = 7 + Math.random() * 8;
+      p.style.width = sz + "px"; p.style.height = sz + "px";
+      p.style.left = (b.x * CS - sz / 2) + "px"; p.style.top = (b.y * CS - sz / 2) + "px";
+      p.style.background = ["#ffb703", "#ff8fab", "#8ac926", "#4cc9f0", "#ffd6dd"][i % 5];
+      p.style.setProperty("--dx", ((Math.random() - 0.5) * 170) + "px");
+      p.style.setProperty("--dy", (-30 - Math.random() * 110) + "px");
+      board.appendChild(p);
+      setTimeout(() => p.remove(), 600);
+    }
+  }
+  cx = cx / pathBodies.length * CS; cy = cy / pathBodies.length * CS;
+  const pop = document.createElement("div");
+  pop.className = "scorePop";
+  pop.style.left = cx + "px"; pop.style.top = cy + "px";
+  pop.style.fontSize = Math.round(CS * (pathBodies.length >= 5 ? 0.95 : pathBodies.length >= 4 ? 0.8 : 0.62)) + "px";
+  pop.textContent = "+" + gain + (combo >= 2 ? " コンボ×" + combo + "!" : "");
+  board.appendChild(pop);
+  setTimeout(() => pop.remove(), 900);
+}
 /* なぞった単語を消す。自動連鎖はしない。消えた分は上からぱらぱら補充される */
 async function clearWord(pathBodies) {
   const reading = pathBodies.map(b => b.mora).join("");
   const len = pathBodies.length;
-  const gain = len * len * 10;
+  const now = Date.now();
+  T.combo = (now - T.lastClearAt < 4000) ? T.combo + 1 : 1;
+  T.lastClearAt = now;
+  const gain = len * len * 10 + (T.combo - 1) * 20;
   T.score += gain; T.words++;
   SAVE.zukan[reading] = (SAVE.zukan[reading] || 0) + 1;
   const info = WORD_INFO.get(reading);
@@ -1037,6 +1086,7 @@ async function clearWord(pathBodies) {
   showToast({ reading, len }, info, 1);
   speak(reading);
   sfx("clear", 1);
+  spawnJuice(pathBodies, gain, T.combo);
   pathBodies.forEach(b => b.el.classList.add("clearing"));
   updateTsumiPanel();
   T.settled = false;
@@ -1079,13 +1129,14 @@ function nearestBody(fx, fy) {
 function tryConnectBody(fx, fy) {
   const b = nearestBody(fx, fy);
   if (!b) return;
-  if (!T.path.length) { T.path = [b]; updateTraceUI(); return; }
+  if (!T.path.length) { T.path = [b]; sfx("connect", { n: 1 }); updateTraceUI(); return; }
   const last = T.path[T.path.length - 1];
   if (b === last) return;
   const prev = T.path[T.path.length - 2];
   if (prev && b === prev) { T.path.pop(); updateTraceUI(); return; }
   if (!T.path.includes(b) && Math.hypot(b.x - last.x, b.y - last.y) <= ADJ_D) {
     T.path.push(b);
+    sfx("connect", { n: T.path.length }); /* 繋ぐたびに音階が上がる */
     updateTraceUI();
   }
 }
@@ -1129,8 +1180,13 @@ function loop(t) {
   if (T && !T.over && T.started && $("game").classList.contains("active")) {
     T.left -= dt;
     const sec = Math.max(0, Math.ceil(T.left));
-    if (sec !== T.lastShownSec) { T.lastShownSec = sec; $("timerVal").textContent = "⏱ " + sec; }
-    if (T.left <= 0) tsumiFinish();
+    if (sec !== T.lastShownSec) {
+      T.lastShownSec = sec;
+      $("timerVal").textContent = "⏱ " + sec;
+      $("timerVal").classList.toggle("urgent", sec <= 10 && sec > 0);
+      if (sec <= 5 && sec > 0) sfx("count");
+    }
+    if (T.left <= 0) { $("timerVal").classList.remove("urgent"); tsumiFinish(); }
   }
   if (T) stepTsumi(dt);
   if (G && G.falling && !G.resolving && !G.over) {
