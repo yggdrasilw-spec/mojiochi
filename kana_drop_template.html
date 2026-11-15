@@ -1291,7 +1291,7 @@ function nearestBody(fx, fy) {
 function tryConnectBody(fx, fy) {
   const b = nearestBody(fx, fy);
   if (!b) return;
-  if (!T.path.length) { T.path = [b]; b.pin = true; sfx("connect", { n: 1 }); updateTraceUI(); return; }
+  if (!T.path.length) { T.path = [b]; b.pin = true; T.started = true; sfx("connect", { n: 1 }); updateTraceUI(); return; }
   const last = T.path[T.path.length - 1];
   if (b === last) return;
   const prev = T.path[T.path.length - 2];
@@ -1304,8 +1304,9 @@ function tryConnectBody(fx, fy) {
   }
 }
 function tsumiPointer(e, phase) {
-  /* 静止を待たずになぞれる（先行入力）。タイマー開始前（初回の落下中）だけ不可 */
-  if (!T || T.over || !T.started) return;
+  /* 最初の落下中からなぞれる（全ブロックの静止を待たない）。タイマーは最初の掴みか
+     初回静止の早い方で始まる */
+  if (!T || T.over) return;
   if (phase === "down") {
     const p = pointerUnits(e);
     lastTraceP = p;

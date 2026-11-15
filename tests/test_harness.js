@@ -380,6 +380,14 @@ global.speechSynthesis = { cancel() {}, speak() {} };
       }
     };
     startGame("tsumi");
+    /* 静止前（落下が始まった直後）でも掴めて、タイマーが最初の掴みで始まること */
+    const gb = makeBody("あ", 3, 3); T.bodies.push(gb);
+    ok(!T.settled && !T.started, "E2E: pre-settle state before first grab");
+    tsumiPointer({ clientX: 3 * 378 / 8, clientY: 3 * 378 / 8 }, "down");
+    ok(T.path.length === 1 && T.path[0] === gb, "E2E: grab works before settle (path=" + T.path.length + ")");
+    ok(T.started, "E2E: timer starts on first grab");
+    tsumiPointer({ clientX: 0, clientY: 0 }, "up");
+    T.bodies = T.bodies.filter(b => b !== gb); gb.el.remove();
     runFrames(60);
     ok(T && T.bodies.length > 0, "E2E: loop spawns tsumi bodies (" + (T ? T.bodies.length : "no T") + ")");
     runFrames(600);
