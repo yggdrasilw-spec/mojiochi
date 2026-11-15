@@ -394,6 +394,41 @@ global.speechSynthesis = { cancel() {}, speak() {} };
     ok(T && T.settled, "E2E: loop settles the board");
     ok(T && T.started && T.left < TSUMI_TIME, "E2E: timer counts down (left=" + (T ? T.left.toFixed(1) : "?") + ")");
     T = null;
+    /* 回帰： 静止した盤面で単語を消したとき、補充ブロックが空中で凍らず落ちてくること
+       （消去の演出待ち中に静止判定が先行し、補充が上部に張り付く不具合があった） */
+    startGame("tsumi");
+    {
+      const wait = ms => new Promise(r => setTimeout(r, ms));
+      let g2 = 0;
+      while (g2++ < 2000 && !(T && T.settled)) { stepTsumi(1 / 60); await wait(1); }
+      ok(T && T.settled, "regression: board settles before clear");
+      ensureTsumiDict();
+      const adj = buildAdj(T.bodies);
+      let wpath = null;
+      const dfs = (i, str, p, used) => {
+        if (wpath) return;
+        if (p.length >= 2 && resolveReading(str)) { wpath = p.slice(); return; }
+        if (p.length >= 6) return;
+        for (const j of adj[i]) {
+          if (used.has(j)) continue;
+          const ns = str + T.bodies[j].mora;
+          if (!TSUMI_PREFIX_SET.has(ns)) continue;
+          used.add(j); p.push(j); dfs(j, ns, p, used); p.pop(); used.delete(j);
+          if (wpath) return;
+        }
+      };
+      for (let i = 0; i < T.bodies.length && !wpath; i++) dfs(i, T.bodies[i].mora, [i], new Set([i]));
+      ok(!!wpath, "regression: a word is traceable on the settled board");
+      if (wpath) {
+        submitWord(wpath.map(i => T.bodies[i]));
+        let g3 = 0;
+        while (g3++ < 900 && !(T.settled && !T.busy && !T.spawnQueue.length)) { stepTsumi(1 / 60); await wait(4); }
+        const stuck = T.bodies.filter(b => b.y < 1.5).length;
+        ok(T.bodies.length === TBODIES && stuck === 0 && T.settled,
+          "regression: refills fall after clear (bodies=" + T.bodies.length + " stuckTop=" + stuck + " settled=" + T.settled + ")");
+      }
+    }
+    T = null;
     startGame("endless");
     runFrames(120);
     ok(G && (!G.falling || G.falling.y > 0 || G.moraCleared > 0), "E2E: falling block falls via loop");

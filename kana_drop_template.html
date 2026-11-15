@@ -1093,6 +1093,7 @@ function stepTsumi(dt) {
       const b = makeBody(s.mora, s.x, 0.62);
       b.vy = 0.5;
       T.bodies.push(b);
+      T.settled = false; /* 空中にブロックがある以上「静止」ではない（保険） */
     }
   }
   if (!T.spawnQueue.length && T.rainEnd == null) T.rainEnd = T.simT;
@@ -1163,7 +1164,10 @@ function stepTsumi(dt) {
     placeBodyEl(b);
   }
   const spawned = !T.spawnQueue.length && T.bodies.length >= TBODIES;
-  if (spawned && (allSleep || T.simT > 9)) onSettled();
+  /* 消去の実行中（clearWordの演出待ち）に静止判定をしてはいけない。残りのブロックが
+     眠っていると即座に「静止」になり、その後で補充されたブロックが空中で凍って
+     落ちてこなくなる（実機で再現・修正） */
+  if (spawned && !T.busy && (allSleep || T.simT > 9)) onSettled();
 }
 function onSettled() {
   /* 予約済み・なぞり途中のブロックは letterFix で文字を変えない（示した単語を守る） */
