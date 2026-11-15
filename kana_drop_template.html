@@ -87,13 +87,16 @@
   #nextRow { display:flex; gap:12px; margin-top:6px; }
   .nextBlk { width:58px; height:58px; border-radius:12px; display:flex; align-items:center; justify-content:center; font-size:32px; font-weight:900; color:#26355d; box-shadow:inset 0 -5px 0 rgba(38,53,93,.15); }
   #scoreVal { font-size:40px; font-weight:900; color:#26355d; line-height:1.1; }
-  #statLine { font-size:20px; font-weight:800; color:#47608f; }
-  #missionBox .mtask { font-size:21px; font-weight:800; color:#26355d; background:#fff7dd; border-radius:10px; padding:5px 12px; margin-top:6px; display:flex; justify-content:space-between; }
+  #statLine { font-size:20px; font-weight:800; color:#47608f; height:58px; overflow:hidden; }
+  #missionBox .mtask { font-size:21px; font-weight:800; color:#26355d; background:#fff7dd; border-radius:10px; padding:5px 12px; margin-top:6px; display:flex; justify-content:space-between; height:37px; align-items:center; box-sizing:border-box; white-space:nowrap; overflow:hidden; }
   #missionBox .mtask.done { background:#eefadb; color:#4d8f1f; }
   #lastWords { font-size:19px; line-height:1.45; color:#26355d; }
-  #lastWords .lw { border-top:2px dashed #d5dbe8; padding:5px 0; }
+  /* ログは常に3件分の固定枠にする（件数や意味の長さで画面位置が動かないように） */
+  #lastWords .lw { border-top:2px dashed #d5dbe8; padding:4px 0; height:66px; box-sizing:border-box; overflow:hidden; }
   #lastWords .lw:first-child { border-top:none; }
   #lastWords b { font-size:22px; }
+  #lastWords .lw1 { white-space:nowrap; overflow:hidden; text-overflow:ellipsis; line-height:1.35; }
+  #lastWords .lw2 { white-space:nowrap; overflow:hidden; text-overflow:ellipsis; line-height:1.4; }
   #dropBtn, #shakeBtn { align-self:center; }
   #wordToast { position:absolute; left:50%; top:110px; transform:translateX(-50%); z-index:70; background:rgba(255,255,255,.96); border-radius:22px; padding:14px 34px; box-shadow:0 8px 0 rgba(38,53,93,.18); text-align:center; display:none; max-width:900px; }
   #wordToast .tw { font-size:52px; font-weight:900; color:#26355d; letter-spacing:.06em; }
@@ -204,7 +207,7 @@
         <div class="pbox" id="nextBox"><div class="ptitle">つぎの もじ</div><div id="nextRow"></div></div>
         <div class="pbox"><div class="ptitle">スコア</div><div id="scoreVal">0</div><div id="statLine">ことば 0こ</div></div>
         <div class="pbox" id="missionBox" style="display:none"><div class="ptitle">お題</div><div id="missionList"></div></div>
-        <div class="pbox"><div class="ptitle">つくった ことば</div><div id="lastWords"><div class="lw">まだ ないよ</div></div></div>
+        <div class="pbox"><div class="ptitle">つくった ことば</div><div id="lastWords"><div class="lw"><div class="lw1">まだ ないよ</div><div class="lw2"></div></div><div class="lw"></div><div class="lw"></div></div></div>
         <button id="dropBtn" class="bigbtn blue small">⬇ おとす</button>
         <button id="shakeBtn" class="bigbtn small" style="display:none; background:linear-gradient(180deg,#ffb703,#fb8500); box-shadow:0 6px 0 #b35c00;">ゆらす</button>
       </div>
@@ -874,12 +877,18 @@ function missionClear() {
   $("ovText").innerHTML = "スコア <b>" + G.score + "</b><br>タイム " + Math.floor(sec / 60) + "分" + (sec % 60) + "秒 ／ つくった ことば " + G.words + "こ";
   $("overOv").classList.add("active");
 }
+/* ログは常に3枠で描く（空きは空枠で埋める）。枠の高さが変わらず、画面位置が動かない */
+function renderLastWords(list) {
+  const items = list.slice(0, 3).map(l =>
+    '<div class="lw"><div class="lw1"><b>' + l.w + "</b>（" + l.reading + "） +" + l.gain + '</div><div class="lw2">' + l.m + "</div></div>");
+  if (!items.length) items.push('<div class="lw"><div class="lw1">まだ ないよ</div><div class="lw2"></div></div>');
+  while (items.length < 3) items.push('<div class="lw"></div>');
+  return items.join("");
+}
 function updatePanel() {
   $("scoreVal").textContent = G.score;
   $("statLine").textContent = "ことば " + G.words + "こ ／ " + G.moraCleared + "もじ";
-  $("lastWords").innerHTML = G.lastWords.length
-    ? G.lastWords.map(l => '<div class="lw"><b>' + l.w + "</b>（" + l.reading + "） +" + l.gain + "<br>" + l.m + "</div>").join("")
-    : '<div class="lw">まだ ないよ</div>';
+  $("lastWords").innerHTML = renderLastWords(G.lastWords);
   if (G.missions) {
     $("missionList").innerHTML = G.missions.map(m =>
       '<div class="mtask' + (m.prog >= m.goal ? " done" : "") + '"><span>' + m.label + '</span><span>' +
@@ -993,9 +1002,7 @@ function updateTsumiPanel() {
   sv.classList.remove("bump"); void sv.offsetWidth; sv.classList.add("bump");
   $("statLine").textContent = "ことば " + T.words + "こ" + (T.combo >= 2 ? " ／ コンボ×" + T.combo : "") +
     (T.queue && T.queue.length ? " ／ よやく " + T.queue.length + "こ" : "");
-  $("lastWords").innerHTML = T.lastWords.length
-    ? T.lastWords.map(l => '<div class="lw"><b>' + l.w + "</b>（" + l.reading + "） +" + l.gain + "<br>" + l.m + "</div>").join("")
-    : '<div class="lw">まだ ないよ</div>';
+  $("lastWords").innerHTML = renderLastWords(T.lastWords);
 }
 function drawTraceLine() {
   if (!traceLineEl) return;

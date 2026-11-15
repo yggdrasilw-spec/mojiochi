@@ -400,6 +400,15 @@ global.speechSynthesis = { cancel() {}, speak() {} };
     G = null;
   }
 
+  /* ===== ログ枠の固定（常に3枠で描く） ===== */
+  {
+    const count = h => (h.match(/class="lw"/g) || []).length;
+    ok(count(renderLastWords([])) === 3, "log frame: empty still renders 3 slots");
+    ok(count(renderLastWords([{ w: "学校", reading: "がっこう", gain: 40, m: "まなぶところ" }])) === 3, "log frame: 1 item still renders 3 slots");
+    ok(count(renderLastWords([1, 2, 3].map(i => ({ w: "w" + i, reading: "r" + i, gain: i, m: "m" + i })))) === 3, "log frame: 3 items render 3 slots");
+    ok(renderLastWords([]).includes("まだ ないよ"), "log frame: empty shows placeholder text");
+  }
+
   console.log("\n=== RESULT: pass=" + pass + " fail=" + fail + " ===");
   if (fails.length) console.log(fails.slice(0, 20).join("\n"));
 })();
