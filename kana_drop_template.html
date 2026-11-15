@@ -47,7 +47,7 @@
   /* 外側(.blk)は配置専用（transformのtranslateのみ）。見た目と拡大・消去アニメーションは
      内側(.blkIn)が担う。同じ要素でやると、拡大が配置translateごと効いてブロックの中心が
      位置に比例してズレる（右下のブロックほど大きく飛ぶ）ため、分離が必須 */
-  .blk { position:absolute; will-change:transform; }
+  .blk { position:absolute; }
   .blkIn { width:100%; height:100%; display:flex; align-items:center; justify-content:center; font-weight:900; color:#26355d; border-radius:12px; box-shadow:inset 0 -5px 0 rgba(38,53,93,.15), 0 3px 0 rgba(38,53,93,.18); transition:transform .12s ease; }
   .blk.falling .blkIn { box-shadow:inset 0 -5px 0 rgba(38,53,93,.15), 0 6px 10px rgba(38,53,93,.3); outline:3px solid rgba(255,255,255,.85); }
   .blk.clearing .blkIn { animation:blkPop .32s ease forwards; }
@@ -255,47 +255,69 @@ function moraUnits(s) {
   return u;
 }
 const WORD_INFO = new Map(), WORDSET = new Set();
-const PREFIX_NEXT = new Map(), SUFFIX_PREV = new Map(), MORA_FREQ = new Map();
+const MORA_FREQ = new Map();
 for (const [r, w, m] of DICT) {
-  const u = moraUnits(r);
-  WORD_INFO.set(r, { w, m, units: u }); WORDSET.add(r);
-  for (const mo of u) MORA_FREQ.set(mo, (MORA_FREQ.get(mo) || 0) + 1);
-  for (let i = 1; i < u.length; i++) {
-    const pre = u.slice(0, i).join(""), suf = u.slice(i).join("");
-    if (!PREFIX_NEXT.has(pre)) PREFIX_NEXT.set(pre, new Set());
-    PREFIX_NEXT.get(pre).add(u[i]);
-    if (!SUFFIX_PREV.has(suf)) SUFFIX_PREV.set(suf, new Set());
-    SUFFIX_PREV.get(suf).add(u[i - 1]);
-  }
+  WORD_INFO.set(r, { w, m }); WORDSET.add(r);
+  for (const mo of moraUnits(r)) MORA_FREQ.set(mo, (MORA_FREQ.get(mo) || 0) + 1);
 }
 const FREQ_LIST = [...MORA_FREQ.entries()];
 const MORA_UNIFORM = FREQ_LIST.map(([mo]) => mo); /* 落ちものの出現候補（全ユニット一様） */
 const FREQ_TOTAL = FREQ_LIST.reduce((a, [, n]) => a + n, 0);
-/* 全単語の接頭辞集合（なぞり探索の枝刈り用） */
+/* 読みのモーラ分解は、必要になった語だけ都度計算してキャッシュする
+   （全111,070語分を起動時に作ると重いため） */
+const UNITS_CACHE = new Map();
+function unitsOf(r) {
+  let u = UNITS_CACHE.get(r);
+  if (!u) { u = moraUnits(r); UNITS_CACHE.set(r, u); }
+  return u;
+}
+/* 全単語の接頭辞集合（なぞり探索の枝刈り・ヒント判定用） */
 const PREFIX_SET = new Set();
-for (const info of WORD_INFO.values()) {
+for (const r of WORDSET) {
   let s = "";
-  for (const mo of info.units) { s += mo; PREFIX_SET.add(s); }
+  for (const mo of moraUnits(r)) { s += mo; PREFIX_SET.add(s); }
+}
+/* 断片 s の後ろ／前に続けられるモーラ。前後の対応表（旧 PREFIX_NEXT / SUFFIX_PREV、
+   合計約47万件）は持たず、PREFIX_SET から都度導出して起動とメモリを軽くする */
+function nextMoraOf(s) { const out = new Set(); for (const u of MORA_UNIFORM) if (PREFIX_SET.has(s + u)) out.add(u); return out; }
+function prevMoraOf(s) { const out = new Set(); for (const u of MORA_UNIFORM) if (PREFIX_SET.has(u + s)) out.add(u); return out; }
+/* canExtend は断片ごとに結果をキャッシュする（同じ断片が盤面に何度も現れるため。
+   キャッシュなしだとヒント走査が1回30ms級になり、体感が悪化する） */
+const EXT_CACHE = new Map();
+function canExtend(s) {
+  let v = EXT_CACHE.get(s);
+  if (v === undefined) {
+    v = false;
+    for (const u of MORA_UNIFORM) if (PREFIX_SET.has(s + u) || PREFIX_SET.has(u + s)) { v = true; break; }
+    EXT_CACHE.set(s, v);
+  }
+  return v;
 }
 /* 小さい文字の代用ルール（もじつみ用）： 単独の小さい文字はブロックとして出さず、
    大きい文字で代用できる。っ→つ、ゃ→や、ぁ→あ 等をまとめて扱う。
    拗音などの合体ユニット（きゃ・しゃ）は1ブロックのまま扱い、対象外 */
 const SMALL2FULL = { "っ": "つ", "ゃ": "や", "ゅ": "ゆ", "ょ": "よ", "ぁ": "あ", "ぃ": "い", "ぅ": "う", "ぇ": "え", "ぉ": "お", "ゎ": "わ" };
 const normalizeUnit = u => (u.length === 1 && SMALL2FULL[u]) ? SMALL2FULL[u] : u;
-const NORM_MAP = new Map(); /* 代用で読んだ文字列 → 本来の読み */
-for (const [r, info] of WORD_INFO) {
-  const n = info.units.map(normalizeUnit).join("");
-  if (n !== r && !NORM_MAP.has(n)) NORM_MAP.set(n, r);
-}
-const TSUMI_WORDSET = new Set([...WORDSET, ...NORM_MAP.keys()]);
-const TSUMI_PREFIX_SET = new Set(PREFIX_SET);
-for (const info of WORD_INFO.values()) {
-  let s = "";
-  for (const mo of info.units) { s += normalizeUnit(mo); TSUMI_PREFIX_SET.add(s); }
+/* もじつみ専用の辞書構造は、もじつみを初めて開いたときに遅延構築する（起動を軽くする） */
+let NORM_MAP = null, TSUMI_WORDSET = null, TSUMI_PREFIX_SET = null;
+function ensureTsumiDict() {
+  if (TSUMI_WORDSET) return;
+  NORM_MAP = new Map(); /* 代用で読んだ文字列 → 本来の読み */
+  for (const r of WORDSET) {
+    const n = unitsOf(r).map(normalizeUnit).join("");
+    if (n !== r && !NORM_MAP.has(n)) NORM_MAP.set(n, r);
+  }
+  TSUMI_WORDSET = new Set([...WORDSET, ...NORM_MAP.keys()]);
+  TSUMI_PREFIX_SET = new Set(PREFIX_SET);
+  for (const r of WORDSET) {
+    let s = "";
+    for (const mo of unitsOf(r)) { s += normalizeUnit(mo); TSUMI_PREFIX_SET.add(s); }
+  }
 }
 /* なぞった文字列→辞書の読み。完全一致を優先し、なければ小さい文字の代用として解決する */
 function resolveReading(s) {
   if (WORDSET.has(s)) return s;
+  ensureTsumiDict();
   return NORM_MAP.get(s) || null;
 }
 /* もじつみ用の出現抽選： 単独の小さい文字は出さない */
@@ -574,8 +596,8 @@ function computeWanted(grid, rows) {
       for (let L = 1; L <= 6 && i + L <= u.length; L++) {
         s += u[i + L - 1];
         if (L >= 2) {
-          if (PREFIX_NEXT.has(s)) for (const mo of PREFIX_NEXT.get(s)) wanted.add(mo);
-          if (SUFFIX_PREV.has(s)) for (const mo of SUFFIX_PREV.get(s)) wanted.add(mo);
+          for (const mo of nextMoraOf(s)) wanted.add(mo);
+          for (const mo of prevMoraOf(s)) wanted.add(mo);
         }
       }
     }
@@ -632,6 +654,7 @@ function buildAdj(bodies) {
 }
 /* 近接グラフ上でなぞって作れる単語の数（重複読みは1つ、capで打ち切り） */
 function countTraceableGraph(bodies, cap) {
+  ensureTsumiDict();
   const adj = buildAdj(bodies);
   const found = new Set();
   const budget = { n: 300000 };
@@ -660,7 +683,7 @@ let BYLEN = null;
 function wordsByLen() {
   if (BYLEN) return BYLEN;
   BYLEN = { 2: [], 3: [], 4: [], 5: [] };
-  for (const [r, info] of WORD_INFO) { const n = info.units.length; if (BYLEN[n]) BYLEN[n].push(r); }
+  for (const [r] of WORD_INFO) { const n = moraUnits(r).length; if (BYLEN[n]) BYLEN[n].push(r); }
   return BYLEN;
 }
 /* 近接グラフ上のランダムな単純路（長さLモーラ）を探す */
@@ -690,7 +713,7 @@ function letterFix(bodies) {
     if (!path) break;
     const pool = wordsByLen()[L];
     const w = pool[Math.floor(Math.random() * pool.length)];
-    const units = WORD_INFO.get(w).units;
+    const units = unitsOf(w);
     path.forEach((bi, k) => setBodyMora(bodies[bi], normalizeUnit(units[k]))); /* 小さい文字は大きい文字で埋め込む */
   }
 }
@@ -873,7 +896,7 @@ function markOneAway() {
         let s = "";
         for (let L = 1; L <= 6 && i + L <= units.length; L++) {
           s += units[i + L - 1];
-          if (L >= 2 && (PREFIX_NEXT.has(s) || SUFFIX_PREV.has(s))) {
+          if (L >= 2 && canExtend(s)) {
             for (let k = 0; k < L; k++) { const [r, c] = cellAt(i + k); wantedSegs.add(r + ":" + c); }
           }
         }
@@ -903,7 +926,7 @@ function genMissions() {
 }
 function missionProgress(ms, m, chain) {
   if (ms.k === "len" && m.len === ms.n) ms.prog++;
-  else if (ms.k === "row") { const info = WORD_INFO.get(m.reading); if (info && rowOfMora(info.units[0]) === ms.row) ms.prog++; }
+  else if (ms.k === "row") { const info = WORD_INFO.get(m.reading); if (info && rowOfMora(unitsOf(m.reading)[0]) === ms.row) ms.prog++; }
   else if (ms.k === "mora") ms.prog += m.len;
   else if (ms.k === "chain" && chain >= ms.n) ms.prog = Math.max(ms.prog, 1);
 }
